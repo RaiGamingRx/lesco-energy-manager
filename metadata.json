@@ -1,0 +1,6 @@
+{
+  "name": "LESCO Energy Manager",
+  "description": "A reliable household electricity tracking and forecasting Progressive Web App for LESCO Pakistan to safeguard the 200 kWh protected tariff threshold.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

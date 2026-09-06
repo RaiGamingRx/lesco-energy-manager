@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  [dir="rtl"] {
+    font-family: 'Noto Sans Arabic', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+}

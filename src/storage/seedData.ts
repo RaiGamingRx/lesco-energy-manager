@@ -1,0 +1,232 @@
+import {
+  AppSettings,
+  BillingCycle,
+  Household,
+  Meter,
+  MeterReading,
+  AuditRecord,
+} from '../types';
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  householdName: 'Gulberg Home',
+  provider: 'LESCO',
+  tariffCategory: 'domestic_protected',
+  trackingMode: 'indoor_cumulative',
+  referenceNumber: '04-11223-3445500',
+  officialThreshold: 200,
+  personalTarget: 190,
+  cautionThreshold: 180,
+  criticalThreshold: 190,
+  preferredReadingTime: '18:00',
+  readingFrequency: 'daily',
+  notificationsEnabled: true,
+  theme: 'dark',
+};
+
+export const DEFAULT_HOUSEHOLD: Household = {
+  id: 'hh-1',
+  name: 'Gulberg Home',
+  provider: 'LESCO',
+  referenceNumber: '04-11223-3445500',
+  trackingMode: 'indoor_cumulative',
+  address: 'Lahore, Punjab, Pakistan',
+  createdAt: '2026-08-01T00:00:00.000Z',
+};
+
+export const DEFAULT_METERS: Meter[] = [
+  {
+    id: 'm-outdoor',
+    householdId: 'hh-1',
+    name: 'Official LESCO Digital Meter',
+    type: 'outdoor_lesco_digital',
+    unit: 'kWh',
+    serialNumber: 'LSC-889124',
+    isIndoorResetSupported: false,
+  },
+  {
+    id: 'm-indoor',
+    householdId: 'hh-1',
+    name: 'Time Star Cumulative Protector',
+    type: 'indoor_cumulative_protector',
+    unit: 'kWh',
+    serialNumber: 'TS-40A-2024',
+    isIndoorResetSupported: true,
+  },
+];
+
+// Previous closed cycle (July 10 - Aug 09)
+export const SEED_CLOSED_CYCLE: BillingCycle = {
+  id: 'cycle-2026-08',
+  householdId: 'hh-1',
+  provider: 'LESCO',
+  tariffCategory: 'domestic_protected',
+  billingPeriodStart: '2026-07-10',
+  billingPeriodEnd: '2026-08-09',
+  officialReadingDate: '2026-08-09',
+  previousOfficialReading: 1320.0,
+  currentOfficialReading: 1500.0,
+  billedUnits: 180,
+  billAmount: 2640,
+  status: 'closed',
+  syncOutdoorReading: 1503.7,
+  syncReadingTimestamp: '2026-08-11T18:00:00.000Z',
+  gapUnits: 3.7,
+  indoorResetConfirmed: true,
+  billReference: 'LESCO-AUG-88912',
+  applicableCharges: {
+    tariffRatePerUnit: 7.74,
+    electricityDuty: 35,
+    tvFee: 35,
+    fca: 110,
+    gst: 0,
+    fpa: 0,
+    otherCharges: 0,
+  },
+  notes: 'Safely completed cycle under 190 kWh personal target.',
+  createdAt: '2026-08-10T10:00:00.000Z',
+  updatedAt: '2026-08-11T18:30:00.000Z',
+};
+
+// Current Active cycle (August 10 - September 09)
+// Note: Local environment date is September 06, 2026!
+// Outdoor meter sync happened when bill arrived:
+// Current LESCO bill reading = 1500.0 kWh
+// Outdoor meter sync = 1503.7 kWh -> Gap Units = 3.7 kWh
+// Indoor meter reset to 0.0 kWh.
+export const SEED_ACTIVE_CYCLE: BillingCycle = {
+  id: 'cycle-2026-09',
+  householdId: 'hh-1',
+  provider: 'LESCO',
+  tariffCategory: 'domestic_protected',
+  billingPeriodStart: '2026-08-10',
+  billingPeriodEnd: '2026-09-09',
+  officialReadingDate: '2026-08-10',
+  previousOfficialReading: 1500.0,
+  currentOfficialReading: 1500.0, // Base starting reading
+  billedUnits: 0, // In progress
+  billAmount: 0,
+  status: 'active',
+  syncOutdoorReading: 1503.7,
+  syncReadingTimestamp: '2026-08-11T18:00:00.000Z',
+  gapUnits: 3.7,
+  indoorResetConfirmed: true,
+  billReference: 'ACTIVE-SEP-2026',
+  applicableCharges: {
+    tariffRatePerUnit: 7.74,
+    electricityDuty: 35,
+    tvFee: 35,
+    fca: 0,
+    gst: 0,
+    fpa: 0,
+    otherCharges: 0,
+  },
+  notes: 'Active cycle. Target: Keep total under 190 kWh to protect subsidized slab.',
+  createdAt: '2026-08-11T18:05:00.000Z',
+  updatedAt: '2026-08-11T18:15:00.000Z',
+};
+
+// Seed readings for the active cycle leading up to today (September 6, 2026)
+export const SEED_READINGS: MeterReading[] = [
+  {
+    id: 'rd-01',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 0.0,
+    reading_timestamp: '2026-08-11T18:00:00.000Z',
+    entry_timestamp: '2026-08-11T18:05:00.000Z',
+    source: 'indoor_meter',
+    notes: 'Indoor meter reset to 000.0 after outdoor sync (Gap: 3.7 kWh)',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-02',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 24.2,
+    reading_timestamp: '2026-08-15T18:00:00.000Z',
+    entry_timestamp: '2026-08-15T18:10:00.000Z',
+    source: 'indoor_meter',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-03',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 56.5,
+    reading_timestamp: '2026-08-20T18:00:00.000Z',
+    entry_timestamp: '2026-08-20T18:02:00.000Z',
+    source: 'indoor_meter',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-04',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 91.0,
+    reading_timestamp: '2026-08-26T18:00:00.000Z',
+    entry_timestamp: '2026-08-26T18:30:00.000Z',
+    source: 'indoor_meter',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-05',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 122.4,
+    reading_timestamp: '2026-09-01T18:00:00.000Z',
+    entry_timestamp: '2026-09-01T18:00:00.000Z',
+    source: 'indoor_meter',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-06',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 141.6,
+    reading_timestamp: '2026-09-04T18:00:00.000Z',
+    entry_timestamp: '2026-09-04T18:15:00.000Z',
+    source: 'indoor_meter',
+    validationStatus: 'valid',
+  },
+  {
+    id: 'rd-07',
+    cycleId: 'cycle-2026-09',
+    meterId: 'm-indoor',
+    householdId: 'hh-1',
+    cumulativeKWh: 147.2,
+    reading_timestamp: '2026-09-05T18:00:00.000Z',
+    entry_timestamp: '2026-09-05T21:00:00.000Z', // Test Scenario 3: Delayed entry
+    source: 'indoor_meter',
+    notes: 'Read at 6:00 PM, entered at 9:00 PM. Calculated from reading_timestamp.',
+    validationStatus: 'valid',
+  },
+];
+
+export const SEED_AUDIT_LOGS: AuditRecord[] = [
+  {
+    id: 'aud-01',
+    entityType: 'billing_cycle',
+    entityId: 'cycle-2026-08',
+    action: 'lock',
+    oldValue: { status: 'active' },
+    newValue: { status: 'closed' },
+    timestamp: '2026-08-11T18:00:00.000Z',
+    reason: 'Finalized bill reconciled and cycle locked upon August bill arrival.',
+  },
+  {
+    id: 'aud-02',
+    entityType: 'billing_cycle',
+    entityId: 'cycle-2026-09',
+    action: 'create',
+    oldValue: null,
+    newValue: { id: 'cycle-2026-09', gapUnits: 3.7 },
+    timestamp: '2026-08-11T18:05:00.000Z',
+    reason: 'New cycle initialized with outdoor meter sync: 1503.7 - 1500 = 3.7 kWh gap.',
+  },
+];
