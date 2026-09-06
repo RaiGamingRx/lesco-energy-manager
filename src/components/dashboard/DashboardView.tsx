@@ -69,7 +69,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       badgeBorder: 'border-emerald-200',
       icon: ShieldCheck,
     },
-    approaching: {
+    safety_zone: {
       label: 'Approaching Target',
       description: 'Consumption is nearing your personal safety threshold.',
       barColor: 'bg-amber-500',
@@ -78,7 +78,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       badgeBorder: 'border-amber-200',
       icon: ShieldAlert,
     },
-    critical: {
+    very_close: {
       label: 'Near 200 Limit',
       description: 'You are very close to the official 200 kWh protected tariff ceiling.',
       barColor: 'bg-orange-500',
@@ -444,9 +444,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span className="text-[11px] font-normal text-slate-400">kWh</span>
                       </td>
                       <td className="py-3 text-right font-mono font-medium text-slate-700">
-                        {r.intervalDeltaKWh !== undefined ? (
+                        {r.consumptionFromPrevious !== undefined ? (
                           <span className="text-emerald-700 font-semibold">
-                            +{r.intervalDeltaKWh.toFixed(2)} kWh
+                            +{r.consumptionFromPrevious.toFixed(2)} kWh
                           </span>
                         ) : (
                           <span className="text-slate-400">Baseline</span>
@@ -454,7 +454,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </td>
                       <td className="py-3 text-right">
                         <DataBadge
-                          origin={r.isCycleBaseline ? 'official' : 'user_entered'}
+                          origin={r.isBaseline ? 'official' : 'user_entered'}
                           size="sm"
                         />
                       </td>

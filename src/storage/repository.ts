@@ -6,6 +6,7 @@ import {
   MeterReading,
   AuditRecord,
 } from '../types';
+import { validateBillingCycleMutation, validateReadingMutation } from '../domain/validation';
 import {
   DEFAULT_SETTINGS,
   DEFAULT_HOUSEHOLD,
@@ -48,6 +49,7 @@ export interface IEnergyDataRepository {
   loadScenario(scenarioId: number): Promise<string>;
 }
 
+/** Temporary browser adapter. Production authority belongs in the backend repository. */
 export class LocalStorageEnergyRepository implements IEnergyDataRepository {
   constructor() {
     this.ensureInitialized();
@@ -116,6 +118,9 @@ export class LocalStorageEnergyRepository implements IEnergyDataRepository {
 
   async saveBillingCycle(cycle: BillingCycle, auditReason?: string): Promise<BillingCycle> {
     const cycles = await this.getBillingCycles();
+    const household = await this.getHousehold();
+    const cycleValidation = validateBillingCycleMutation(cycle, cycles, household);
+    if (!cycleValidation.isValid) throw new Error(cycleValidation.message || 'Billing cycle failed domain validation.');
     const existingIndex = cycles.findIndex((c) => c.id === cycle.id);
     let oldVal = null;
 
@@ -150,10 +155,11 @@ export class LocalStorageEnergyRepository implements IEnergyDataRepository {
     if (!target) throw new Error(`Cycle with ID ${cycleId} not found`);
 
     const oldVal = { ...target };
-    target.status = 'closed';
-    if (finalData) {
-      Object.assign(target, finalData);
-    }
+    const updatedCycle = { ...target, ...finalData, status: 'closed' as const };
+    const household = await this.getHousehold();
+    const cycleValidation = validateBillingCycleMutation(updatedCycle, cycles, household);
+    if (!cycleValidation.isValid) throw new Error(cycleValidation.message || 'Closed billing cycle failed domain validation.');
+    Object.assign(target, updatedCycle);
     target.updatedAt = new Date().toISOString();
 
     localStorage.setItem(STORAGE_KEYS.CYCLES, JSON.stringify(cycles));
@@ -177,6 +183,22 @@ export class LocalStorageEnergyRepository implements IEnergyDataRepository {
       id: `rd-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       entry_timestamp: new Date().toISOString(),
     };
+
+    const [household, meters, cycles] = await Promise.all([
+      this.getHousehold(),
+      this.getMeters(),
+      this.getBillingCycles(),
+    ]);
+    const meter = meters.find((candidate) => candidate.id === newReading.meterId);
+    const cycle = cycles.find((candidate) => candidate.id === newReading.cycleId);
+    if (!meter || !cycle) throw new Error('Reading must reference an existing meter and billing cycle.');
+    const readingValidation = validateReadingMutation(newReading, {
+      household,
+      meter,
+      cycle,
+      existingReadings: readings,
+    });
+    if (!readingValidation.isValid) throw new Error(readingValidation.message || 'Meter reading failed domain validation.');
 
     readings.push(newReading);
     // Persist sorted by physical reading_timestamp
@@ -209,6 +231,22 @@ export class LocalStorageEnergyRepository implements IEnergyDataRepository {
       ...updates,
       isCorrected: true,
     };
+    const [household, meters, cycles] = await Promise.all([
+      this.getHousehold(),
+      this.getMeters(),
+      this.getBillingCycles(),
+    ]);
+    const meter = meters.find((candidate) => candidate.id === updated.meterId);
+    const cycle = cycles.find((candidate) => candidate.id === updated.cycleId);
+    if (!meter || !cycle) throw new Error('Reading must reference an existing meter and billing cycle.');
+    const readingValidation = validateReadingMutation(updated, {
+      household,
+      meter,
+      cycle,
+      existingReadings: readings,
+      currentReadingId: id,
+    });
+    if (!readingValidation.isValid) throw new Error(readingValidation.message || 'Corrected meter reading failed domain validation.');
 
     readings[index] = updated;
     readings.sort((a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime());

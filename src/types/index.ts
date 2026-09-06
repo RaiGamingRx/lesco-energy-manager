@@ -18,6 +18,37 @@ export type CycleStatus = 'draft' | 'active' | 'closed' | 'locked';
 
 export type ReadingSource = 'indoor_meter' | 'outdoor_meter' | 'manual';
 
+export type MeterLifecycleEventType = 'installed' | 'replaced' | 'reset' | 'rollover';
+
+export interface LescoConnection {
+  id: string;
+  householdId: string;
+  provider: 'LESCO';
+  referenceNumber: string;
+  createdAt: string;
+  isActive: boolean;
+}
+
+export interface MeterLifecycleEvent {
+  id: string;
+  meterId: string;
+  householdId: string;
+  type: MeterLifecycleEventType;
+  occurredAt: string;
+  previousMeterId?: string;
+  baselineReading?: number;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface ReadingCorrection {
+  correctedAt: string;
+  correctedBy?: string;
+  reason: string;
+  previousValue: number;
+  previousReadingTimestamp: string;
+}
+
 export type ValidationStatus = 'valid' | 'warning' | 'error';
 
 export type DataOrigin = 'official' | 'calculated' | 'estimated' | 'user_entered';
@@ -30,6 +61,7 @@ export interface Household {
   trackingMode: TrackingMode;
   address?: string;
   createdAt: string;
+  connectionIds?: string[];
 }
 
 export interface Meter {
@@ -40,6 +72,10 @@ export interface Meter {
   unit: 'kWh';
   serialNumber?: string;
   isIndoorResetSupported: boolean;
+  isActive?: boolean;
+  installedAt?: string;
+  retiredAt?: string;
+  lifecycleEventIds?: string[];
 }
 
 export interface BillCharges {
@@ -77,6 +113,8 @@ export interface BillingCycle {
   notes?: string;
   createdAt: string;
   updatedAt: string;
+  connectionId?: string;
+  officialReadingSource?: ReadingSource;
 }
 
 export interface MeterReading {
@@ -96,6 +134,9 @@ export interface MeterReading {
   consumptionFromPrevious?: number;
   intervalHours?: number;
   isCorrected?: boolean;
+  isBaseline?: boolean;
+  lifecycleEventId?: string;
+  correctionHistory?: ReadingCorrection[];
 }
 
 export interface AuditRecord {
@@ -164,4 +205,9 @@ export interface CalculationSummary {
   paceDifferencePerDay: number; // Difference between current daily pace and safe daily allowance
   
   status: ThresholdStatus;
+  dataQuality: 'valid' | 'invalid';
+  dataQualityMessage?: string;
+  currentUsage: number;
+  projectedUsage: number;
+  projectedRisk: ThresholdStatus;
 }

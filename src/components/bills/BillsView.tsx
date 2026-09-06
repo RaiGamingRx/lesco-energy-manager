@@ -12,7 +12,7 @@ export const BillsView: React.FC<BillsViewProps> = ({
   onOpenBillEntry,
   onOpenSyncOutdoor,
 }) => {
-  const { cycles, activeCycle, closeBillingCycle } = useEnergy();
+  const { cycles, activeCycle, closeCycle } = useEnergy();
   const [isClosingCycle, setIsClosingCycle] = useState(false);
 
   const handleCloseActiveCycle = async () => {
@@ -24,7 +24,7 @@ export const BillsView: React.FC<BillsViewProps> = ({
 
     setIsClosingCycle(true);
     try {
-      await closeBillingCycle(activeCycle.id);
+      await closeCycle(activeCycle.id);
     } catch (err) {
       alert((err as Error).message);
     } finally {

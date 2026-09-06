@@ -296,7 +296,7 @@ export const translations: Record<Language, Record<TranslationKey, string>> = {
     ceiling_exceeded: '✗ Over 200 Limit',
     target_achieved: '✓ Safe Target Met',
     target_missed: 'Over Target',
-    audit_trail_title: 'Tamper-Proof Audit History',
+    audit_trail_title: 'Local Audit History',
     audit_trail_desc: 'Every entry, user correction, or cycle finalization is permanently recorded to guarantee data integrity.',
     no_audit_records: 'No audit records yet.',
     settings_title: 'Settings',

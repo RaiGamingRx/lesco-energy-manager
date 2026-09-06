@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useEnergy } from '../../context/EnergyContext';
 import { PWAInstallButton } from '../common/PWAInstallButton';
+import { TrackingMode } from '../../types';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -29,7 +30,7 @@ export const SettingsView: React.FC = () => {
   } = useEnergy();
 
   // Settings State
-  const [trackingMode, setTrackingMode] = useState<'indoor_cumulative' | 'outdoor_direct'>(
+  const [trackingMode, setTrackingMode] = useState<TrackingMode>(
     settings?.trackingMode || 'indoor_cumulative'
   );
   const [personalTarget, setPersonalTarget] = useState<string>(
@@ -44,8 +45,7 @@ export const SettingsView: React.FC = () => {
 
   // Household State
   const [householdName, setHouseholdName] = useState<string>(household?.name || 'My Home');
-  const [city, setCity] = useState<string>(household?.city || 'Lahore');
-  const [consumerNo, setConsumerNo] = useState<string>(household?.consumerNumber || '');
+  const [address, setAddress] = useState<string>(household?.address || '');
   const [referenceNo, setReferenceNo] = useState<string>(household?.referenceNumber || '');
 
   // UI status
@@ -63,8 +63,7 @@ export const SettingsView: React.FC = () => {
 
       await updateHousehold({
         name: householdName,
-        city,
-        consumerNumber: consumerNo,
+        address,
         referenceNumber: referenceNo,
       });
 
@@ -187,7 +186,7 @@ export const SettingsView: React.FC = () => {
 
             <label
               className={`p-4 rounded-xl border cursor-pointer transition ${
-                trackingMode === 'outdoor_direct'
+                  trackingMode === 'outdoor_meter'
                   ? 'bg-slate-50 border-slate-900 text-slate-900'
                   : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
               }`}
@@ -197,8 +196,8 @@ export const SettingsView: React.FC = () => {
                 <input
                   type="radio"
                   name="trackingMode"
-                  checked={trackingMode === 'outdoor_direct'}
-                  onChange={() => setTrackingMode('outdoor_direct')}
+                  checked={trackingMode === 'outdoor_meter'}
+                  onChange={() => setTrackingMode('outdoor_meter')}
                   className="accent-slate-900"
                 />
               </div>
@@ -275,11 +274,11 @@ export const SettingsView: React.FC = () => {
               />
             </div>
             <div>
-              <label className="text-slate-700 font-semibold block mb-1">City / Division</label>
+              <label className="text-slate-700 font-semibold block mb-1">Address</label>
               <input
                 type="text"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
                 className="w-full rounded-xl bg-white border border-slate-300 py-2 px-3 text-slate-900 outline-none focus:border-slate-900"
               />
             </div>
@@ -294,11 +293,11 @@ export const SettingsView: React.FC = () => {
               />
             </div>
             <div>
-              <label className="text-slate-700 font-semibold block mb-1">Consumer Number</label>
+              <label className="text-slate-700 font-semibold block mb-1">LESCO Reference Number</label>
               <input
                 type="text"
-                value={consumerNo}
-                onChange={(e) => setConsumerNo(e.target.value)}
+                value={referenceNo}
+                onChange={(e) => setReferenceNo(e.target.value)}
                 placeholder="1234567"
                 className="w-full rounded-xl bg-white border border-slate-300 py-2 px-3 font-mono text-slate-900 outline-none focus:border-slate-900"
               />

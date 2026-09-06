@@ -13,47 +13,54 @@ import {
 export function calculateConsumption(readings: MeterReading[]): {
   processedReadings: MeterReading[];
   totalTrackedUnits: number;
+  isValid: boolean;
+  error?: string;
 } {
   if (!readings || readings.length === 0) {
-    return { processedReadings: [], totalTrackedUnits: 0 };
+    return { processedReadings: [], totalTrackedUnits: 0, isValid: true };
   }
-
-  // Sort strictly by physical reading_timestamp
-  const sorted = [...readings].sort(
-    (a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime()
-  );
 
   let totalTracked = 0;
   const processed: MeterReading[] = [];
+  let error: string | undefined;
+  const sequences = new Map<string, MeterReading[]>();
+  for (const reading of readings) {
+    const key = `${reading.householdId}:${reading.meterId}:${reading.cycleId}`;
+    const sequence = sequences.get(key) ?? [];
+    sequence.push(reading);
+    sequences.set(key, sequence);
+  }
 
-  for (let i = 0; i < sorted.length; i++) {
-    const current = sorted[i];
-    if (i === 0) {
-      processed.push({
-        ...current,
-        consumptionFromPrevious: 0,
-        intervalHours: 0,
-      });
-    } else {
+  for (const sequence of sequences.values()) {
+    const sorted = sequence.sort(
+      (a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime()
+    );
+    for (let i = 0; i < sorted.length; i++) {
+      const current = sorted[i];
+      if (i === 0) {
+        processed.push({ ...current, consumptionFromPrevious: 0, intervalHours: 0 });
+        continue;
+      }
       const prev = sorted[i - 1];
       const prevTime = new Date(prev.reading_timestamp).getTime();
       const currTime = new Date(current.reading_timestamp).getTime();
       const hours = Math.max(0.01, (currTime - prevTime) / (1000 * 60 * 60));
-      
-      const delta = Math.max(0, current.cumulativeKWh - prev.cumulativeKWh);
+      const delta = current.cumulativeKWh - prev.cumulativeKWh;
+      if (delta < 0 && !current.isBaseline) {
+        error ??= `Invalid meter sequence: ${current.cumulativeKWh} kWh is lower than ${prev.cumulativeKWh} kWh.`;
+        processed.push({ ...current, consumptionFromPrevious: undefined, intervalHours: undefined });
+        continue;
+      }
       totalTracked += delta;
-
-      processed.push({
-        ...current,
-        consumptionFromPrevious: parseFloat(delta.toFixed(2)),
-        intervalHours: parseFloat(hours.toFixed(2)),
-      });
+      processed.push({ ...current, consumptionFromPrevious: parseFloat(delta.toFixed(2)), intervalHours: parseFloat(hours.toFixed(2)) });
     }
   }
 
   return {
     processedReadings: processed,
     totalTrackedUnits: parseFloat(totalTracked.toFixed(2)),
+    isValid: !error,
+    error,
   };
 }
 
@@ -177,6 +184,10 @@ export function calculateCycleSummary(
       forecastMethod: 'cycle_average',
       paceDifferencePerDay: 0,
       status: calculateThresholdRisk(0, officialCeiling, personalTarget),
+      dataQuality: 'valid',
+      currentUsage: 0,
+      projectedUsage: 0,
+      projectedRisk: calculateThresholdRisk(0, officialCeiling, personalTarget),
     };
   }
 
@@ -185,7 +196,7 @@ export function calculateCycleSummary(
 
   // 2. Calculate consumption from readings
   const cycleReadings = readings.filter((r) => r.cycleId === cycle.id);
-  const { processedReadings, totalTrackedUnits } = calculateConsumption(cycleReadings);
+  const { processedReadings, totalTrackedUnits, isValid, error } = calculateConsumption(cycleReadings);
 
   // Mode differences:
   // For indoor meter, usage in cycle = gapUnits + cumulative meter delta
@@ -196,7 +207,7 @@ export function calculateCycleSummary(
     if (cycleReadings.length > 0) {
       const latestReading = cycleReadings[cycleReadings.length - 1].cumulativeKWh;
       const outdoorDelta = latestReading - cycle.currentOfficialReading;
-      estimatedCycleUnits = Math.max(0, outdoorDelta);
+      estimatedCycleUnits = outdoorDelta;
     } else {
       estimatedCycleUnits = gapUnits;
     }
@@ -209,7 +220,7 @@ export function calculateCycleSummary(
   // 3. Billing cycle date calculations
   const startDate = new Date(cycle.billingPeriodStart).getTime();
   const endDate = new Date(cycle.billingPeriodEnd).getTime();
-  const now = Date.now();
+  const now = Date.parse(cycle.updatedAt);
 
   const totalCycleMs = Math.max(24 * 60 * 60 * 1000, endDate - startDate);
   const daysInCycle = Math.max(1, Math.round(totalCycleMs / (1000 * 60 * 60 * 24)));
@@ -240,7 +251,7 @@ export function calculateCycleSummary(
     if (recentReadings.length >= 2) {
       const firstRecent = recentReadings[0];
       const lastRecent = recentReadings[recentReadings.length - 1];
-      const recentKWh = Math.max(0, lastRecent.cumulativeKWh - firstRecent.cumulativeKWh);
+      const recentKWh = lastRecent.cumulativeKWh - firstRecent.cumulativeKWh;
       const recentHours =
         (new Date(lastRecent.reading_timestamp).getTime() -
           new Date(firstRecent.reading_timestamp).getTime()) /
@@ -286,8 +297,8 @@ export function calculateCycleSummary(
 
   // Status is evaluated based on the HIGHER of current estimated usage or projected usage
   // to warn users BEFORE they cross 200!
-  const evaluationUsage = Math.max(estimatedCycleUnits, projectedFinalUsage);
-  const status = calculateThresholdRisk(evaluationUsage, officialCeiling, personalTarget);
+  const status = calculateThresholdRisk(estimatedCycleUnits, officialCeiling, personalTarget);
+  const projectedRisk = calculateThresholdRisk(projectedFinalUsage, officialCeiling, personalTarget);
 
   return {
     cycleId: cycle.id,
@@ -311,6 +322,11 @@ export function calculateCycleSummary(
     projectedThresholdCrossingDate,
     paceDifferencePerDay,
     status,
+    dataQuality: isValid && estimatedCycleUnits >= 0 ? 'valid' : 'invalid',
+    dataQualityMessage: error || (estimatedCycleUnits < 0 ? 'Invalid consumption cannot be calculated.' : undefined),
+    currentUsage: estimatedCycleUnits,
+    projectedUsage: projectedFinalUsage,
+    projectedRisk,
   };
 }
 

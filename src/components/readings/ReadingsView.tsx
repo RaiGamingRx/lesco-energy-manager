@@ -155,7 +155,7 @@ export const ReadingsView: React.FC<ReadingsViewProps> = ({
               {/* Right: Provenance & Correction Action */}
               <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-100">
                 <div className="flex items-center gap-2">
-                  <DataBadge origin={r.isCycleBaseline ? 'official' : 'user_entered'} size="sm" />
+                  <DataBadge origin={r.isBaseline ? 'official' : 'user_entered'} size="sm" />
                   {r.isCorrected && (
                     <span className="text-[11px] bg-amber-50 text-amber-800 px-2 py-0.5 rounded font-medium">
                       Corrected

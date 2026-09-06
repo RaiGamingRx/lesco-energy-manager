@@ -217,7 +217,7 @@ export const HistoryView: React.FC = () => {
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-xs text-slate-700 flex items-start gap-3">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
             <div>
-              <span className="font-semibold text-slate-900 block">Tamper-Proof Audit History</span>
+              <span className="font-semibold text-slate-900 block">Local Audit History</span>
               <p className="text-[11px] text-slate-500 mt-0.5">
                 Every creation, user correction, or cycle finalization is permanently recorded to guarantee data provenance and prevent silent overwrites.
               </p>
