@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
 import { Language, TranslationKey, translations } from '../i18n/translations';
+import { preferences } from '../storage/preferences';
 
 export type ThemeMode = 'light' | 'dark' | 'auto';
 
@@ -26,7 +27,7 @@ export const UIProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   // Theme state initialization
   const [theme, setThemeState] = useState<ThemeMode>(() => {
     if (typeof window === 'undefined') return 'auto';
-    const saved = localStorage.getItem(THEME_STORAGE_KEY) as ThemeMode;
+    const saved = preferences.get(THEME_STORAGE_KEY) as ThemeMode;
     if (saved === 'light' || saved === 'dark' || saved === 'auto') return saved;
     return 'auto';
   });
@@ -67,16 +68,14 @@ export const UIProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const setTheme = useCallback((newTheme: ThemeMode) => {
     setThemeState(newTheme);
     try {
-      localStorage.setItem(THEME_STORAGE_KEY, newTheme);
-    } catch {
-      // ignore storage errors
-    }
+      preferences.set(THEME_STORAGE_KEY, newTheme);
+    } catch { /* Preference adapter handles unavailable storage. */ }
   }, []);
 
   // Language state initialization
   const [language, setLanguageState] = useState<Language>(() => {
     if (typeof window === 'undefined') return 'en';
-    const saved = localStorage.getItem(LANG_STORAGE_KEY) as Language;
+    const saved = preferences.get(LANG_STORAGE_KEY) as Language;
     if (saved === 'en' || saved === 'ur') return saved;
     return 'en';
   });
@@ -94,10 +93,8 @@ export const UIProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   const setLanguage = useCallback((newLang: Language) => {
     setLanguageState(newLang);
     try {
-      localStorage.setItem(LANG_STORAGE_KEY, newLang);
-    } catch {
-      // ignore storage errors
-    }
+      preferences.set(LANG_STORAGE_KEY, newLang);
+    } catch { /* Preference adapter handles unavailable storage. */ }
   }, []);
 
   // Translation function with parameter interpolation

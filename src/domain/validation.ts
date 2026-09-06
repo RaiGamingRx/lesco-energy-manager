@@ -54,7 +54,7 @@ export function validateReadingMutation(reading: MeterReading, context: ReadingV
   if (reading.cycleId !== context.cycle.id || context.cycle.householdId !== context.household.id) issues.push(issue('invalid_cycle_relationship', 'Reading is not attached to the selected household billing cycle.'));
 
   const others = context.existingReadings
-    .filter((candidate) => candidate.id !== context.currentReadingId && candidate.meterId === reading.meterId)
+    .filter((candidate) => candidate.id !== context.currentReadingId && candidate.meterId === reading.meterId && candidate.cycleId === reading.cycleId)
     .sort((a, b) => Date.parse(a.reading_timestamp) - Date.parse(b.reading_timestamp));
   if (others.some((candidate) => candidate.reading_timestamp === reading.reading_timestamp && candidate.cumulativeKWh === reading.cumulativeKWh)) {
     issues.push(issue('duplicate_reading', 'An identical reading already exists for this meter.'));

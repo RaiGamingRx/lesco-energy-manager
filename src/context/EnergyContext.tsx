@@ -8,7 +8,7 @@ import {
   MeterReading,
   AuditRecord,
 } from '../types';
-import { repository } from '../storage/repository';
+import { energyApplication } from '../application/container';
 import { calculateCycleSummary } from '../engine/calculations';
 
 interface EnergyContextType {
@@ -56,21 +56,14 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     try {
       setIsLoading(true);
       setError(null);
-      const [s, h, m, c, r, a] = await Promise.all([
-        repository.getSettings(),
-        repository.getHousehold(),
-        repository.getMeters(),
-        repository.getBillingCycles(),
-        repository.getMeterReadings(),
-        repository.getAuditRecords(),
-      ]);
+      const snapshot = await energyApplication.loadSnapshot();
 
-      setSettings(s);
-      setHousehold(h);
-      setMeters(m);
-      setCycles(c);
-      setReadings(r);
-      setAuditLogs(a);
+      setSettings(snapshot.settings);
+      setHousehold(snapshot.household);
+      setMeters(snapshot.meters);
+      setCycles(snapshot.cycles);
+      setReadings(snapshot.readings);
+      setAuditLogs(snapshot.auditLogs);
     } catch (err) {
       setError((err as Error).message || 'Failed to load electricity records');
     } finally {
@@ -97,75 +90,63 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [activeCycle, readings, settings]);
 
   const addReading = async (reading: Omit<MeterReading, 'id' | 'entry_timestamp'>) => {
-    const created = await repository.addMeterReading(reading);
+    const created = await energyApplication.createReading(reading);
     await refreshData();
     return created;
   };
 
   const updateReading = async (id: string, updates: Partial<MeterReading>, reason?: string) => {
-    const updated = await repository.updateMeterReading(id, updates, reason);
+    const updated = await energyApplication.correctReading(id, updates, reason);
     await refreshData();
     return updated;
   };
 
   const deleteReading = async (id: string, reason?: string) => {
-    await repository.deleteMeterReading(id, reason);
+    await energyApplication.removeReading(id, reason);
     await refreshData();
   };
 
   const saveCycle = async (cycle: BillingCycle, reason?: string) => {
-    const saved = await repository.saveBillingCycle(cycle, reason);
+    const saved = await energyApplication.createOrUpdateCycle(cycle, reason);
     await refreshData();
     return saved;
   };
 
   const closeCycle = async (cycleId: string, finalData?: Partial<BillingCycle>) => {
-    const closed = await repository.closeBillingCycle(cycleId, finalData);
+    const closed = await energyApplication.finalizeCycle(cycleId, finalData);
     await refreshData();
     return closed;
   };
 
   const syncOutdoorMeter = async (outdoorReading: number) => {
     if (!activeCycle) throw new Error('No active billing cycle found to synchronize outdoor meter.');
-    const gap = Math.max(0, outdoorReading - activeCycle.currentOfficialReading);
-    const updated: BillingCycle = {
-      ...activeCycle,
-      syncOutdoorReading: outdoorReading,
-      syncReadingTimestamp: new Date().toISOString(),
-      gapUnits: parseFloat(gap.toFixed(2)),
-      indoorResetConfirmed: true,
-      updatedAt: new Date().toISOString(),
-    };
-    await repository.saveBillingCycle(
-      updated,
-      `Outdoor meter sync: Reading ${outdoorReading} vs bill ${activeCycle.currentOfficialReading} = Gap ${gap.toFixed(2)} kWh`
-    );
+    await energyApplication.synchronizeOutdoorMeter(activeCycle, outdoorReading);
     await refreshData();
   };
 
   const updateSettings = async (newSettings: Partial<AppSettings>) => {
-    await repository.updateSettings(newSettings);
+    await energyApplication.updateSettings(newSettings);
     await refreshData();
   };
 
   const updateHousehold = async (newHousehold: Partial<Household>) => {
-    await repository.updateHousehold(newHousehold);
+    await energyApplication.updateHousehold(newHousehold);
     await refreshData();
   };
 
   const loadScenario = async (scenarioId: number) => {
-    const message = await repository.loadScenario(scenarioId);
+    const message = await energyApplication.loadDevelopmentScenario(scenarioId);
     await refreshData();
     return message;
   };
 
   const resetData = async () => {
-    await repository.resetToDefaultData();
+    await energyApplication.resetDevelopmentData();
     await refreshData();
   };
 
   const importData = async (json: string) => {
-    const res = await repository.importData(json);
+    const res = await energyApplication.importValidatedData(json);
     if (res.success) {
       await refreshData();
     }
@@ -173,11 +154,11 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const exportAll = async () => {
-    return repository.exportAllData();
+    return energyApplication.exportData();
   };
 
   const exportCSV = async () => {
-    return repository.exportReadingsCSV();
+    return energyApplication.exportReadings();
   };
 
   return (

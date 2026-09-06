@@ -85,7 +85,8 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
         billedUnits: units,
         billAmount: amount,
       },
-      cycles
+      cycles,
+      household || undefined,
     );
 
     if (!valResult.isValid) {

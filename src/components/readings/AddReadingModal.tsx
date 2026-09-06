@@ -10,7 +10,7 @@ interface AddReadingModalProps {
 }
 
 export const AddReadingModal: React.FC<AddReadingModalProps> = ({ isOpen, onClose }) => {
-  const { readings, activeCycle, meters, settings, addReading } = useEnergy();
+  const { readings, activeCycle, meters, household, settings, addReading } = useEnergy();
 
   // Primary input state
   const [cumulativeKWh, setCumulativeKWh] = useState<string>('');
@@ -61,7 +61,9 @@ export const AddReadingModal: React.FC<AddReadingModalProps> = ({ isOpen, onClos
         reading_timestamp: effectiveReadingTimestamp,
         source: settings?.trackingMode === 'outdoor_meter' ? 'outdoor_meter' : 'indoor_meter',
       },
-      readings
+      readings,
+      undefined,
+      activeCycle && targetMeter && household ? { household, meter: targetMeter, cycle: activeCycle } : undefined,
     );
   }, [cumulativeKWh, effectiveReadingTimestamp, readings, settings]);
 

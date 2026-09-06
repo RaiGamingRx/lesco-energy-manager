@@ -10,7 +10,7 @@ interface EditReadingModalProps {
 }
 
 export const EditReadingModal: React.FC<EditReadingModalProps> = ({ reading, onClose }) => {
-  const { readings, updateReading, deleteReading } = useEnergy();
+  const { readings, meters, cycles, household, updateReading, deleteReading } = useEnergy();
 
   const [cumulativeKWh, setCumulativeKWh] = useState<string>(
     reading ? reading.cumulativeKWh.toString() : ''
@@ -38,7 +38,10 @@ export const EditReadingModal: React.FC<EditReadingModalProps> = ({ reading, onC
         source: reading.source,
       },
       readings,
-      reading.id
+      reading.id,
+      household && meters.find((meter) => meter.id === reading.meterId) && cycles.find((cycle) => cycle.id === reading.cycleId)
+        ? { household, meter: meters.find((meter) => meter.id === reading.meterId)!, cycle: cycles.find((cycle) => cycle.id === reading.cycleId)! }
+        : undefined,
     );
 
     if (!validation.isValid) {

@@ -29,6 +29,25 @@ export interface LescoConnection {
   isActive: boolean;
 }
 
+export interface OfficialBill {
+  id: string;
+  householdId: string;
+  connectionId: string;
+  billingCycleId: string;
+  provider: Provider;
+  billReference: string;
+  issuedOn: string;
+  dueOn?: string;
+  previousReading: number;
+  currentReading: number;
+  billedUnits: number;
+  amount: number;
+  charges: BillCharges;
+  source: 'user_entered' | 'provider_import';
+  createdAt: string;
+  finalizedAt?: string;
+}
+
 export interface MeterLifecycleEvent {
   id: string;
   meterId: string;
@@ -141,7 +160,7 @@ export interface MeterReading {
 
 export interface AuditRecord {
   id: string;
-  entityType: 'meter_reading' | 'billing_cycle' | 'settings';
+  entityType: 'meter_reading' | 'billing_cycle' | 'meter_lifecycle_event' | 'settings';
   entityId: string;
   action: 'create' | 'edit' | 'correction' | 'lock' | 'delete';
   oldValue: unknown;
