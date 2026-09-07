@@ -17,6 +17,7 @@ export interface PersistenceState {
   accounts: Account[];
   memberships: HouseholdMembership[];
   settings: AppSettings;
+  /** Transitional local singleton; future canonical ownership is Account -> HouseholdMembership -> Household. */
   household: Household;
   connections: LescoConnection[];
   meters: Meter[];

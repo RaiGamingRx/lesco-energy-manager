@@ -183,7 +183,7 @@ describe('application and repository boundaries', () => {
     expect((await repository.getOfficialBills()).some((item) => item.id === 'bill-new-cycle')).toBe(true);
   });
 
-  it('rejects stale cycle versions and records actor/tenant audit context', async () => {
+  it('checks supported cycle versions and records future command-contract metadata', async () => {
     const adapter = new LocalStorageStateAdapter(createMemoryStorage());
     const repository = new LocalStorageEnergyRepository(adapter);
     const active = (await adapter.load()).cycles.find((cycle) => cycle.status === 'active')!;
