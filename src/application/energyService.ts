@@ -51,6 +51,10 @@ export class EnergyApplicationService {
     return this.repository.createMeterLifecycleEvent(event);
   }
 
+  createLifecycleBaseline(event: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>, reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<{ event: MeterLifecycleEvent; reading: MeterReading }> {
+    return this.repository.createLifecycleBaseline(event, reading);
+  }
+
   createOrUpdateCycle(cycle: BillingCycle, reason?: string): Promise<BillingCycle> {
     return this.repository.saveBillingCycle(cycle, reason);
   }
