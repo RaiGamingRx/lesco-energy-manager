@@ -108,6 +108,19 @@ describe('authoritative calculation engine', () => {
     expect(after.actualConsumptionKwh).toBe(150);
   });
 
+  it('excludes lifecycle events after asOf from historical quality and totals', () => {
+    const rolloverAfterAsOf: MeterLifecycleEvent = {
+      id: 'rollover-after-as-of', meterId: 'meter-1', connectionId: 'connection-1', householdId: 'household-1',
+      type: 'rollover', occurredAt: '2026-01-20T00:00:00.000Z', createdAt: '2026-01-20T00:00:00.000Z',
+    };
+    const historical = calculateMeterConsumption([
+      reading('r1', 0, '2026-01-01T00:00:00.000Z'), reading('r2', 100, '2026-01-10T00:00:00.000Z'),
+    ], { ...options, asOf: '2026-01-10T00:00:00.000Z', lifecycleEvents: [rolloverAfterAsOf] });
+    expect(historical.actualConsumptionKwh).toBe(100);
+    expect(historical.dataQuality).toBe('VALID');
+    expect(historical.anomalies.map((item) => item.code)).not.toContain('UNSUPPORTED_ROLLOVER');
+  });
+
   it('treats timezone-equivalent physical timestamps as one instant', () => {
     const result = calculateMeterConsumption([
       reading('r1', 100, '2026-01-01T00:00:00.000Z'),

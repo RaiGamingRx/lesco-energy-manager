@@ -35,7 +35,11 @@ function operationFailure(result: { message?: string }): DomainOperationError {
 
 /**
  * Domain-aware repository over a replaceable state store.
- * The browser adapter is temporary; this repository has no storage API dependency.
+ * The browser adapter and singleton household are transitional/pre-backend. The future canonical
+ * model is Account -> HouseholdMembership -> Household -> Connection -> Meter -> BillingCycle -> MeterReading,
+ * with Household -> OfficialBill. CommandContext idempotency and concurrency fields are future server
+ * contracts: local storage records idempotency metadata and checks expectedVersion only on supported
+ * billing-cycle writes; it does not provide distributed idempotency or universal optimistic concurrency.
  */
 export class LocalStorageEnergyRepository implements EnergyRepository {
   constructor(private readonly store: StateStore = new LocalStorageStateAdapter()) {}

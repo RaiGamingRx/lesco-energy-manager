@@ -110,6 +110,7 @@ export type ValidationStatus = 'valid' | 'warning' | 'error';
 export type DataOrigin = 'official' | 'calculated' | 'estimated' | 'user_entered';
 
 export interface Household {
+  /** Transitional local singleton representation. The future canonical model is Account -> HouseholdMembership -> Household. */
   id: string;
   name: string;
   provider: Provider;
@@ -232,6 +233,7 @@ export interface AuditRecord {
   actorAccountId?: string;
   householdId?: string;
   correlationId?: string;
+  /** Future server-contract metadata only; local storage does not deduplicate commands. */
   idempotencyKey?: string;
   entityVersion?: number;
   authority?: DataAuthority;
@@ -241,7 +243,9 @@ export interface CommandContext {
   actorAccountId?: string;
   householdId?: string;
   correlationId?: string;
+  /** Future server contract; local storage records this metadata but does not provide distributed idempotency. */
   idempotencyKey?: string;
+  /** Future server contract; local storage only checks this on supported billing-cycle writes. */
   expectedVersion?: number;
   authoritativeAt?: string;
 }
