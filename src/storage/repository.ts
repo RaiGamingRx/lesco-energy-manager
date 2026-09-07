@@ -6,6 +6,8 @@ import {
   Meter,
   MeterReading,
   MeterLifecycleEvent,
+  OfficialBill,
+  CommandContext,
 } from '../types';
 import { validateBillingCycleMutation, validateReadingMutation, validateStateIntegrity } from '../domain/validation';
 import { DomainOperationError, PersistenceError } from './errors';
@@ -46,8 +48,8 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     await this.store.commit(state, origin);
   }
 
-  private audit(state: PersistenceState, entityType: AuditRecord['entityType'], entityId: string, action: AuditRecord['action'], oldValue: unknown, newValue: unknown, reason: string): void {
-    state.auditLogs.unshift({ id: id('audit'), entityType, entityId, action, oldValue, newValue, timestamp: new Date().toISOString(), reason });
+  private audit(state: PersistenceState, entityType: AuditRecord['entityType'], entityId: string, action: AuditRecord['action'], oldValue: unknown, newValue: unknown, reason: string, context?: CommandContext, entityVersion?: number): void {
+    state.auditLogs.unshift({ id: id('audit'), entityType, entityId, action, oldValue, newValue, timestamp: context?.authoritativeAt || new Date().toISOString(), reason, actorAccountId: context?.actorAccountId, householdId: context?.householdId || state.household.id, correlationId: context?.correlationId, idempotencyKey: context?.idempotencyKey, entityVersion, authority: 'local_user_data' });
     state.auditLogs = state.auditLogs.slice(0, 300);
   }
 
@@ -79,24 +81,54 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     return (await this.state()).cycles.sort((a, b) => Date.parse(b.billingPeriodStart) - Date.parse(a.billingPeriodStart));
   }
 
+  async getOfficialBills(): Promise<OfficialBill[]> { return (await this.state()).bills; }
+
   async getActiveBillingCycle(): Promise<BillingCycle | null> {
     return (await this.state()).cycles.find((cycle) => cycle.status === 'active') || null;
   }
 
-  async saveBillingCycle(cycle: BillingCycle, auditReason?: string): Promise<BillingCycle> {
+  async saveBillingCycle(cycle: BillingCycle, auditReason?: string, context?: CommandContext): Promise<BillingCycle> {
     const state = await this.state();
     const existingIndex = state.cycles.findIndex((candidate) => candidate.id === cycle.id);
     const existing = existingIndex >= 0 ? state.cycles[existingIndex] : undefined;
     if (existing && (existing.status === 'closed' || existing.status === 'locked')) {
       throw new DomainOperationError('immutable_record', 'Finalized billing cycles cannot be edited.');
     }
+    if (existing && context?.expectedVersion !== undefined && (existing.version ?? 0) !== context.expectedVersion) throw new DomainOperationError('conflict', 'Billing cycle version is stale.');
     const validation = validateBillingCycleMutation(cycle, state.cycles, state.household);
     if (!validation.isValid) throw operationFailure(validation);
     const now = new Date().toISOString();
-    const saved = { ...cycle, createdAt: existing?.createdAt || now, updatedAt: now };
+    const saved = { ...cycle, createdAt: existing?.createdAt || now, updatedAt: now, version: (existing?.version ?? 0) + 1, revisionStatus: cycle.status === 'closed' || cycle.status === 'locked' ? 'finalized' as const : 'active' as const };
     if (existingIndex >= 0) state.cycles[existingIndex] = saved;
     else state.cycles.push(saved);
-    this.audit(state, 'billing_cycle', cycle.id, existing ? 'edit' : 'create', existing || null, saved, auditReason || 'Billing cycle saved');
+    const integrity = validateStateIntegrity(state);
+    if (!integrity.isValid) throw operationFailure(integrity);
+    this.audit(state, 'billing_cycle', cycle.id, existing ? 'edit' : 'create', existing || null, saved, auditReason || 'Billing cycle saved', context, saved.version);
+    await this.commit(state);
+    return saved;
+  }
+
+  async saveCycleWithOfficialBill(cycle: BillingCycle, bill: OfficialBill, auditReason?: string, context?: CommandContext): Promise<BillingCycle> {
+    const state = await this.state();
+    const existingIndex = state.cycles.findIndex((candidate) => candidate.id === cycle.id);
+    const existing = existingIndex >= 0 ? state.cycles[existingIndex] : undefined;
+    if (existing && (existing.status === 'closed' || existing.status === 'locked')) throw new DomainOperationError('immutable_record', 'Finalized billing cycles cannot be edited.');
+    if (existing && context?.expectedVersion !== undefined && (existing.version ?? 0) !== context.expectedVersion) throw new DomainOperationError('conflict', 'Billing cycle version is stale.');
+    if (bill.billingCycleId !== cycle.id || bill.householdId !== cycle.householdId || bill.connectionId !== cycle.connectionId || bill.billingPeriodStart !== cycle.billingPeriodStart || bill.billingPeriodEnd !== cycle.billingPeriodEnd) throw new DomainOperationError('validation_failed', 'Official bill must belong to the same household, connection, and period as its billing cycle.');
+    const validation = validateBillingCycleMutation(cycle, state.cycles, state.household);
+    if (!validation.isValid) throw operationFailure(validation);
+    if (state.bills.some((candidate) => candidate.id === bill.id && candidate.billingCycleId !== bill.billingCycleId)) throw new DomainOperationError('validation_failed', 'Official bill identity is already attached to another cycle.');
+    const now = new Date().toISOString();
+    const saved = { ...cycle, officialBillId: bill.id, createdAt: existing?.createdAt || now, updatedAt: now, version: (existing?.version ?? 0) + 1, revisionStatus: cycle.status === 'closed' || cycle.status === 'locked' ? 'finalized' as const : 'active' as const };
+    if (existingIndex >= 0) state.cycles[existingIndex] = saved;
+    else state.cycles.push(saved);
+    const billIndex = state.bills.findIndex((candidate) => candidate.id === bill.id);
+    if (billIndex >= 0) state.bills[billIndex] = bill;
+    else state.bills.push(bill);
+    const integrity = validateStateIntegrity(state);
+    if (!integrity.isValid) throw operationFailure(integrity);
+    this.audit(state, 'billing_cycle', cycle.id, existing ? 'edit' : 'create', existing || null, saved, auditReason || 'Billing cycle and OfficialBill saved atomically', context, saved.version);
+    this.audit(state, 'official_bill', bill.id, 'create', null, bill, 'OfficialBill recorded with billing cycle', context, bill.version);
     await this.commit(state);
     return saved;
   }
@@ -110,8 +142,12 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     const candidate: BillingCycle = { ...current, ...finalData, status: 'closed', updatedAt: new Date().toISOString() };
     const validation = validateBillingCycleMutation(candidate, state.cycles, state.household);
     if (!validation.isValid) throw operationFailure(validation);
+    candidate.version = (current.version ?? 0) + 1;
+    candidate.revisionStatus = 'finalized';
     state.cycles[index] = candidate;
-    this.audit(state, 'billing_cycle', cycleId, 'lock', current, candidate, 'Cycle officially closed and finalized');
+    const integrity = validateStateIntegrity(state);
+    if (!integrity.isValid) throw operationFailure(integrity);
+    this.audit(state, 'billing_cycle', cycleId, 'lock', current, candidate, 'Cycle officially closed and finalized', undefined, candidate.version);
     await this.commit(state);
     return candidate;
   }
@@ -123,12 +159,13 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
 
   async getLifecycleEvents(): Promise<MeterLifecycleEvent[]> { return (await this.state()).lifecycleEvents; }
 
-  async addMeterReading(readingData: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading> {
+  async addMeterReading(readingData: Omit<MeterReading, 'id' | 'entry_timestamp'>, _context?: CommandContext): Promise<MeterReading> {
     const state = await this.state();
-    const reading: MeterReading = { ...readingData, id: id('reading'), entry_timestamp: new Date().toISOString() };
-    const meter = state.meters.find((candidate) => candidate.id === reading.meterId);
-    const cycle = state.cycles.find((candidate) => candidate.id === reading.cycleId);
+    const meter = state.meters.find((candidate) => candidate.id === readingData.meterId);
+    const cycle = state.cycles.find((candidate) => candidate.id === readingData.cycleId);
     if (!meter || !cycle) throw new DomainOperationError('validation_failed', 'Reading must reference an existing meter and billing cycle.');
+    if (cycle.meterId !== meter.id || cycle.connectionId !== meter.connectionId) throw new DomainOperationError('validation_failed', 'Reading meter and cycle must share the same connection context.');
+    const reading: MeterReading = { ...readingData, connectionId: meter.connectionId, id: id('reading'), entry_timestamp: new Date().toISOString(), authority: 'local_user_data', version: 1, revisionStatus: 'active' };
     if (cycle.status === 'closed' || cycle.status === 'locked') throw new DomainOperationError('immutable_record', 'Readings cannot be added to a finalized billing cycle.');
     const validation = validateReadingMutation(reading, { household: state.household, meter, cycle, existingReadings: state.readings, lifecycleEvents: state.lifecycleEvents });
     if (!validation.isValid) throw operationFailure(validation);
@@ -147,7 +184,7 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     const cycle = state.cycles.find((candidate) => candidate.id === oldValue.cycleId);
     if (!cycle) throw new DomainOperationError('validation_failed', 'Reading references a missing billing cycle.');
     if (cycle.status === 'closed' || cycle.status === 'locked') throw new DomainOperationError('immutable_record', 'Readings in finalized billing cycles cannot be edited.');
-    const updated: MeterReading = { ...oldValue, ...updates, isCorrected: true, correctionHistory: [...(oldValue.correctionHistory || []), { correctedAt: new Date().toISOString(), reason: reason || 'Explicit correction', previousValue: oldValue.cumulativeKWh, previousReadingTimestamp: oldValue.reading_timestamp }] };
+    const updated: MeterReading = { ...oldValue, ...updates, isCorrected: true, version: (oldValue.version ?? 0) + 1, correctionHistory: [...(oldValue.correctionHistory || []), { correctedAt: new Date().toISOString(), reason: reason || 'Explicit correction', previousValue: oldValue.cumulativeKWh, previousReadingTimestamp: oldValue.reading_timestamp }] };
     const meter = state.meters.find((candidate) => candidate.id === updated.meterId);
     if (!meter) throw new DomainOperationError('validation_failed', 'Reading references a missing meter.');
     const validation = validateReadingMutation(updated, { household: state.household, meter, cycle, existingReadings: state.readings, lifecycleEvents: state.lifecycleEvents, currentReadingId: readingId });
@@ -174,7 +211,7 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
   async createMeterLifecycleEvent(eventData: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>): Promise<MeterLifecycleEvent> {
     const state = await this.state();
     const meter = state.meters.find((candidate) => candidate.id === eventData.meterId);
-    if (!meter || meter.householdId !== eventData.householdId || state.household.id !== eventData.householdId) {
+    if (!meter || meter.householdId !== eventData.householdId || meter.connectionId !== eventData.connectionId || !state.connections.some((connection) => connection.id === eventData.connectionId && connection.householdId === eventData.householdId) || state.household.id !== eventData.householdId) {
       throw new DomainOperationError('validation_failed', 'Meter lifecycle event has an invalid household or meter relationship.');
     }
     if (eventData.type === 'rollover') throw new DomainOperationError('validation_failed', 'Rollover events require a configured meter maximum and are not supported by this model.');
@@ -195,9 +232,10 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     const state = await this.state();
     const meter = state.meters.find((candidate) => candidate.id === eventData.meterId);
     const cycle = state.cycles.find((candidate) => candidate.id === readingData.cycleId);
-    if (!meter || !cycle || meter.householdId !== eventData.householdId || cycle.householdId !== eventData.householdId || readingData.meterId !== eventData.meterId || readingData.householdId !== eventData.householdId) throw new DomainOperationError('validation_failed', 'Lifecycle baseline has invalid household, meter, or cycle relationships.');
+    if (!meter || !cycle || meter.householdId !== eventData.householdId || meter.connectionId !== eventData.connectionId || cycle.householdId !== eventData.householdId || cycle.connectionId !== eventData.connectionId || cycle.meterId !== eventData.meterId || readingData.meterId !== eventData.meterId || readingData.householdId !== eventData.householdId) throw new DomainOperationError('validation_failed', 'Lifecycle baseline has invalid household, meter, connection, or cycle relationships.');
+    if (cycle.status === 'closed' || cycle.status === 'locked') throw new DomainOperationError('immutable_record', 'Lifecycle baselines cannot be added to finalized billing cycles.');
     const event: MeterLifecycleEvent = { ...eventData, id: id('meter-event'), createdAt: new Date().toISOString() };
-    const reading: MeterReading = { ...readingData, id: id('reading'), entry_timestamp: new Date().toISOString(), isBaseline: true, lifecycleEventId: event.id };
+    const reading: MeterReading = { ...readingData, connectionId: event.connectionId, id: id('reading'), entry_timestamp: new Date().toISOString(), isBaseline: true, lifecycleEventId: event.id };
     const candidateState = clone(state);
     candidateState.lifecycleEvents.push(event);
     const meterIndex = candidateState.meters.findIndex((candidate) => candidate.id === event.meterId);
@@ -237,6 +275,13 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
         const currentReadings = existing.readings.filter((reading) => reading.cycleId === cycleId);
         const incomingReadings = envelope.state.readings.filter((reading) => reading.cycleId === cycleId);
         if (canonical(currentReadings) !== canonical(incomingReadings)) throw new PersistenceError('immutable_record', `Readings in finalized billing cycle ${cycleId} cannot be changed through import.`);
+        const currentBills = existing.bills.filter((bill) => bill.billingCycleId === cycleId);
+        const incomingBills = envelope.state.bills.filter((bill) => bill.billingCycleId === cycleId);
+        if (canonical(currentBills) !== canonical(incomingBills)) throw new PersistenceError('immutable_record', `Bills in finalized billing cycle ${cycleId} cannot be changed through import.`);
+        const finalizedMeterIds = new Set(existing.cycles.filter((cycle) => finalizedCycleIds.has(cycle.id)).map((cycle) => cycle.meterId));
+        const currentEvents = existing.lifecycleEvents.filter((event) => finalizedMeterIds.has(event.meterId));
+        const incomingEvents = envelope.state.lifecycleEvents.filter((event) => finalizedMeterIds.has(event.meterId));
+        if (canonical(currentEvents) !== canonical(incomingEvents)) throw new PersistenceError('immutable_record', 'Lifecycle history attached to finalized meters cannot be changed through import.');
       }
       await this.commit(envelope.state, 'imported_data');
       return { success: true, message: 'Data imported successfully.' };
@@ -258,9 +303,9 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     if (scenarioId === 2) {
       const cycle = await this.getActiveBillingCycle();
       if (cycle) {
-        const event = await this.createMeterLifecycleEvent({ meterId: 'm-indoor', householdId: cycle.householdId, type: 'reset', occurredAt: '2026-09-05T17:59:00.000Z', baselineReading: 72, reason: 'Development scenario reset' });
-        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, cumulativeKWh: 72, reading_timestamp: '2026-09-05T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid', isBaseline: true, lifecycleEventId: event.id });
-        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, cumulativeKWh: 73.4, reading_timestamp: '2026-09-06T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' });
+        const event = await this.createMeterLifecycleEvent({ meterId: 'm-indoor', connectionId: cycle.connectionId, householdId: cycle.householdId, type: 'reset', occurredAt: '2026-09-05T17:59:00.000Z', baselineReading: 72, reason: 'Development scenario reset' });
+        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, connectionId: cycle.connectionId, cumulativeKWh: 72, reading_timestamp: '2026-09-05T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid', isBaseline: true, lifecycleEventId: event.id });
+        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, connectionId: cycle.connectionId, cumulativeKWh: 73.4, reading_timestamp: '2026-09-06T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' });
       }
       return 'Loaded Scenario 2: Added increasing indoor meter readings.';
     }

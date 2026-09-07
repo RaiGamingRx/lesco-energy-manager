@@ -6,6 +6,8 @@ import {
   Meter,
   MeterReading,
   MeterLifecycleEvent,
+  OfficialBill,
+  CommandContext,
 } from '../types';
 import { EnergyRepository } from '../storage/ports';
 import { DomainOperationError } from '../storage/errors';
@@ -15,6 +17,7 @@ export interface EnergySnapshot {
   household: Household;
   meters: Meter[];
   cycles: BillingCycle[];
+  bills: OfficialBill[];
   readings: MeterReading[];
   lifecycleEvents: MeterLifecycleEvent[];
   auditLogs: AuditRecord[];
@@ -25,20 +28,21 @@ export class EnergyApplicationService {
   constructor(private readonly repository: EnergyRepository) {}
 
   async loadSnapshot(): Promise<EnergySnapshot> {
-    const [settings, household, meters, cycles, readings, lifecycleEvents, auditLogs] = await Promise.all([
+    const [settings, household, meters, cycles, bills, readings, lifecycleEvents, auditLogs] = await Promise.all([
       this.repository.getSettings(),
       this.repository.getHousehold(),
       this.repository.getMeters(),
       this.repository.getBillingCycles(),
+      this.repository.getOfficialBills(),
       this.repository.getMeterReadings(),
       this.repository.getLifecycleEvents ? this.repository.getLifecycleEvents() : Promise.resolve([]),
       this.repository.getAuditRecords(),
     ]);
-    return { settings, household, meters, cycles, readings, lifecycleEvents, auditLogs };
+    return { settings, household, meters, cycles, bills, readings, lifecycleEvents, auditLogs };
   }
 
-  createReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading> {
-    return this.repository.addMeterReading(reading);
+  createReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>, context?: CommandContext): Promise<MeterReading> {
+    return this.repository.addMeterReading(reading, context);
   }
 
   correctReading(id: string, updates: Partial<MeterReading>, reason?: string): Promise<MeterReading> {
@@ -57,8 +61,12 @@ export class EnergyApplicationService {
     return this.repository.createLifecycleBaseline(event, reading);
   }
 
-  createOrUpdateCycle(cycle: BillingCycle, reason?: string): Promise<BillingCycle> {
-    return this.repository.saveBillingCycle(cycle, reason);
+  createOrUpdateCycle(cycle: BillingCycle, reason?: string, context?: CommandContext): Promise<BillingCycle> {
+    return this.repository.saveBillingCycle(cycle, reason, context);
+  }
+
+  createOrUpdateCycleWithOfficialBill(cycle: BillingCycle, bill: OfficialBill, reason?: string, context?: CommandContext): Promise<BillingCycle> {
+    return this.repository.saveCycleWithOfficialBill(cycle, bill, reason, context);
   }
 
   finalizeCycle(id: string, finalData?: Partial<BillingCycle>): Promise<BillingCycle> {

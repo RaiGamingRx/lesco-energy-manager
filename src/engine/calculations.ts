@@ -55,19 +55,21 @@ const makeAnomaly = (code: CalculationAnomalyCode, detail?: string, readingIds?:
 
 function authorizedBoundary(reading: MeterReading, events: MeterLifecycleEvent[]): MeterLifecycleEvent | undefined {
   if (!reading.isBaseline || !reading.lifecycleEventId) return undefined;
-  return events.find((event) => event.id === reading.lifecycleEventId && (event.type === 'reset' || event.type === 'replaced') && event.meterId === reading.meterId && event.householdId === reading.householdId && Date.parse(event.occurredAt) <= Date.parse(reading.reading_timestamp) && event.baselineReading === reading.cumulativeKWh);
+  return events.find((event) => event.id === reading.lifecycleEventId && (event.type === 'reset' || event.type === 'replaced') && event.meterId === reading.meterId && event.connectionId === reading.connectionId && event.householdId === reading.householdId && Date.parse(event.occurredAt) <= Date.parse(reading.reading_timestamp) && event.baselineReading === reading.cumulativeKWh);
 }
 
-function canonicalReadings(readings: MeterReading[], scope?: CalculationScope): { readings: MeterReading[]; anomalies: CalculationAnomaly[] } {
+function canonicalReadings(readings: MeterReading[], scope: CalculationScope | undefined, asOf: number): { readings: MeterReading[]; anomalies: CalculationAnomaly[] } {
   const scoped = scope ? readings.filter((reading) => reading.householdId === scope.householdId && reading.meterId === scope.meterId && reading.cycleId === scope.cycleId) : [...readings];
   const anomalies = scope && scoped.length !== readings.length ? [makeAnomaly('CROSS_ENTITY_CONTAMINATION')] : [];
-  return { readings: [...scoped].sort((left, right) => Date.parse(left.reading_timestamp) - Date.parse(right.reading_timestamp) || left.id.localeCompare(right.id)), anomalies };
+  const eligible = scoped.filter((reading) => !Number.isFinite(asOf) || Date.parse(reading.reading_timestamp) <= asOf);
+  return { readings: [...eligible].sort((left, right) => Date.parse(left.reading_timestamp) - Date.parse(right.reading_timestamp) || left.id.localeCompare(right.id)), anomalies };
 }
 
 /** Authoritative, deterministic cumulative-meter calculation. */
 export function calculateMeterConsumption(readings: MeterReading[], options: CalculationOptions): MeterCalculationResult {
-  const { readings: sorted, anomalies } = canonicalReadings(readings, options.scope);
-  const events = options.lifecycleEvents ?? [];
+  const asOf = Date.parse(options.asOf);
+  const { readings: sorted, anomalies } = canonicalReadings(readings, options.scope, asOf);
+  const events = (options.lifecycleEvents ?? []).filter((event) => !Number.isFinite(asOf) || Date.parse(event.occurredAt) <= asOf);
   const intervals: CalculationInterval[] = [];
   let actualConsumptionKwh = 0;
   let validIntervalCount = 0;
@@ -82,10 +84,10 @@ export function calculateMeterConsumption(readings: MeterReading[], options: Cal
       sequenceBroken = true;
       continue;
     }
-    const duplicateKey = `${reading.reading_timestamp}:${reading.cumulativeKWh}`;
+    const duplicateKey = `${timestamp}:${reading.cumulativeKWh}`;
     if (seen.has(duplicateKey)) { anomalies.push(makeAnomaly('DUPLICATE_OBSERVATION', undefined, [seen.get(duplicateKey)!.id, reading.id])); continue; }
     seen.set(duplicateKey, reading);
-    const sameTime = sorted.filter((candidate) => candidate.reading_timestamp === reading.reading_timestamp && finite(candidate.cumulativeKWh));
+    const sameTime = sorted.filter((candidate) => Date.parse(candidate.reading_timestamp) === timestamp && finite(candidate.cumulativeKWh));
     if (sameTime.some((candidate) => candidate.cumulativeKWh !== reading.cumulativeKWh)) {
       anomalies.push(makeAnomaly('CONFLICTING_SAME_TIME_OBSERVATION', undefined, sameTime.map((candidate) => candidate.id)));
       invalidIntervalCount += 1;
@@ -173,7 +175,8 @@ export function calculateCycleResult(cycle: BillingCycle, readings: MeterReading
 export function calculateConsumption(readings: MeterReading[]): { processedReadings: MeterReading[]; totalTrackedUnits: number; isValid: boolean; error?: string } {
   const first = readings[0];
   const scope = first ? { householdId: first.householdId, meterId: first.meterId, cycleId: first.cycleId } : undefined;
-  const result = calculateMeterConsumption(readings, { asOf: first?.reading_timestamp ?? DEFAULT_REFERENCE_TIME, scope });
+  const latestTimestamp = readings.reduce((latest, reading) => Date.parse(reading.reading_timestamp) > Date.parse(latest) ? reading.reading_timestamp : latest, first?.reading_timestamp ?? DEFAULT_REFERENCE_TIME);
+  const result = calculateMeterConsumption(readings, { asOf: latestTimestamp, scope });
   const validById = new Map(result.intervals.filter((interval) => interval.status === 'VALID').map((interval) => [interval.currentReadingId, interval]));
   const processedReadings = [...readings].filter((reading) => !scope || (reading.householdId === scope.householdId && reading.meterId === scope.meterId && reading.cycleId === scope.cycleId)).sort((left, right) => Date.parse(left.reading_timestamp) - Date.parse(right.reading_timestamp) || left.id.localeCompare(right.id)).map((reading) => { const interval = validById.get(reading.id); return { ...reading, consumptionFromPrevious: interval?.consumptionKwh ?? (interval ? 0 : undefined), intervalHours: interval?.elapsedDays === undefined ? undefined : interval.elapsedDays * 24 }; });
   const error = result.anomalies.find((item) => !['DUPLICATE_OBSERVATION', 'CROSS_ENTITY_CONTAMINATION'].includes(item.code));

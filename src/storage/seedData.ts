@@ -1,11 +1,28 @@
 import {
   AppSettings,
+  Account,
   BillingCycle,
   Household,
+  HouseholdMembership,
   Meter,
   MeterReading,
   AuditRecord,
+  OfficialBill,
 } from '../types';
+
+export const DEFAULT_ACCOUNT: Account = {
+  id: 'account-local-demo',
+  displayName: 'Local Demo Account',
+  createdAt: '2026-08-01T00:00:00.000Z',
+};
+
+export const DEFAULT_MEMBERSHIP: HouseholdMembership = {
+  id: 'membership-local-demo',
+  householdId: 'hh-1',
+  accountId: DEFAULT_ACCOUNT.id,
+  role: 'owner',
+  createdAt: '2026-08-01T00:00:00.000Z',
+};
 
 export const DEFAULT_SETTINGS: AppSettings = {
   householdName: 'Gulberg Home',
@@ -31,12 +48,14 @@ export const DEFAULT_HOUSEHOLD: Household = {
   trackingMode: 'indoor_cumulative',
   address: 'Lahore, Punjab, Pakistan',
   createdAt: '2026-08-01T00:00:00.000Z',
+  connectionIds: ['connection-lesco-demo'],
 };
 
 export const DEFAULT_METERS: Meter[] = [
   {
     id: 'm-outdoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     name: 'Official LESCO Digital Meter',
     type: 'outdoor_lesco_digital',
     unit: 'kWh',
@@ -46,6 +65,7 @@ export const DEFAULT_METERS: Meter[] = [
   {
     id: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     name: 'Time Star Cumulative Protector',
     type: 'indoor_cumulative_protector',
     unit: 'kWh',
@@ -58,6 +78,8 @@ export const DEFAULT_METERS: Meter[] = [
 export const SEED_CLOSED_CYCLE: BillingCycle = {
   id: 'cycle-2026-08',
   householdId: 'hh-1',
+  connectionId: 'connection-lesco-demo',
+  meterId: 'm-outdoor',
   provider: 'LESCO',
   tariffCategory: 'domestic_protected',
   billingPeriodStart: '2026-07-10',
@@ -85,7 +107,31 @@ export const SEED_CLOSED_CYCLE: BillingCycle = {
   notes: 'Safely completed cycle under 190 kWh personal target.',
   createdAt: '2026-08-10T10:00:00.000Z',
   updatedAt: '2026-08-11T18:30:00.000Z',
+  officialBillId: 'bill-2026-08',
 };
+
+export const SEED_OFFICIAL_BILLS: OfficialBill[] = [{
+  id: 'bill-2026-08',
+  householdId: 'hh-1',
+  connectionId: 'connection-lesco-demo',
+  billingCycleId: 'cycle-2026-08',
+  billingPeriodStart: '2026-07-10',
+  billingPeriodEnd: '2026-08-09',
+  provider: 'LESCO',
+  billReference: 'LESCO-AUG-88912',
+  issuedOn: '2026-08-09',
+  previousReading: 1320,
+  currentReading: 1500,
+  billedUnits: 180,
+  amount: 2640,
+  charges: SEED_CLOSED_CYCLE.applicableCharges,
+  source: 'user_entered',
+  extractionState: 'not_applicable',
+  provenance: 'User-entered official bill fields; not provider-verified.',
+  createdAt: '2026-08-10T10:00:00.000Z',
+  finalizedAt: '2026-08-11T18:00:00.000Z',
+  revisionStatus: 'finalized',
+}];
 
 // Current Active cycle (August 10 - September 09)
 // Note: Local environment date is September 06, 2026!
@@ -96,6 +142,8 @@ export const SEED_CLOSED_CYCLE: BillingCycle = {
 export const SEED_ACTIVE_CYCLE: BillingCycle = {
   id: 'cycle-2026-09',
   householdId: 'hh-1',
+  connectionId: 'connection-lesco-demo',
+  meterId: 'm-indoor',
   provider: 'LESCO',
   tariffCategory: 'domestic_protected',
   billingPeriodStart: '2026-08-10',
@@ -132,6 +180,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 0.0,
     reading_timestamp: '2026-08-11T18:00:00.000Z',
     entry_timestamp: '2026-08-11T18:05:00.000Z',
@@ -144,6 +193,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 24.2,
     reading_timestamp: '2026-08-15T18:00:00.000Z',
     entry_timestamp: '2026-08-15T18:10:00.000Z',
@@ -155,6 +205,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 56.5,
     reading_timestamp: '2026-08-20T18:00:00.000Z',
     entry_timestamp: '2026-08-20T18:02:00.000Z',
@@ -166,6 +217,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 91.0,
     reading_timestamp: '2026-08-26T18:00:00.000Z',
     entry_timestamp: '2026-08-26T18:30:00.000Z',
@@ -177,6 +229,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 122.4,
     reading_timestamp: '2026-09-01T18:00:00.000Z',
     entry_timestamp: '2026-09-01T18:00:00.000Z',
@@ -188,6 +241,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 141.6,
     reading_timestamp: '2026-09-04T18:00:00.000Z',
     entry_timestamp: '2026-09-04T18:15:00.000Z',
@@ -199,6 +253,7 @@ export const SEED_READINGS: MeterReading[] = [
     cycleId: 'cycle-2026-09',
     meterId: 'm-indoor',
     householdId: 'hh-1',
+    connectionId: 'connection-lesco-demo',
     cumulativeKWh: 147.2,
     reading_timestamp: '2026-09-05T18:00:00.000Z',
     entry_timestamp: '2026-09-05T21:00:00.000Z', // Test Scenario 3: Delayed entry

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { calculateConsumption } from '../engine/calculations';
 import { BillingCycle, Household, Meter, MeterLifecycleEvent, MeterReading } from '../types';
 import { validateBillingCycleMutation, validateReadingMutation, validateStateIntegrity } from './validation';
+import { estimateBillAmount } from '../engine/tariffs';
 
 const household: Household = {
   id: 'household-1',
@@ -15,6 +16,7 @@ const household: Household = {
 const meter: Meter = {
   id: 'meter-1',
   householdId: household.id,
+  connectionId: 'connection-1',
   name: 'Test meter',
   type: 'indoor_cumulative_protector',
   unit: 'kWh',
@@ -25,6 +27,8 @@ const meter: Meter = {
 const cycle: BillingCycle = {
   id: 'cycle-1',
   householdId: household.id,
+  connectionId: 'connection-1',
+  meterId: meter.id,
   provider: 'LESCO',
   tariffCategory: 'domestic_protected',
   billingPeriodStart: '2026-01-01',
@@ -45,6 +49,7 @@ const reading = (id: string, value: number, timestamp: string, overrides: Partia
   cycleId: cycle.id,
   meterId: meter.id,
   householdId: household.id,
+  connectionId: meter.connectionId,
   cumulativeKWh: value,
   reading_timestamp: timestamp,
   entry_timestamp: timestamp,
@@ -76,7 +81,7 @@ describe('domain validation', () => {
   it('allows a reset baseline with a reset event', () => {
     const result = validateReadingMutation(reading('r2', 0, '2026-01-02T00:00:00.000Z', { isBaseline: true, lifecycleEventId: 'event-1' }), context(
       [reading('r1', 150, '2026-01-01T00:00:00.000Z')],
-      [{ id: 'event-1', meterId: meter.id, householdId: household.id, type: 'reset', occurredAt: '2026-01-02T00:00:00.000Z', baselineReading: 0, createdAt: '2026-01-02T00:00:00.000Z' }],
+      [{ id: 'event-1', meterId: meter.id, connectionId: meter.connectionId, householdId: household.id, type: 'reset', occurredAt: '2026-01-02T00:00:00.000Z', baselineReading: 0, createdAt: '2026-01-02T00:00:00.000Z' }],
     ));
     expect(result.isValid).toBe(true);
   });
@@ -84,7 +89,7 @@ describe('domain validation', () => {
   it('allows the first baseline of a replacement meter', () => {
     const replacement: Meter = { ...meter, id: 'meter-2', serialNumber: 'replacement' };
     const result = validateReadingMutation({ ...reading('r2', 0, '2026-01-02T00:00:00.000Z'), meterId: replacement.id, isBaseline: true }, { ...context([]), meter: replacement });
-    expect(result.issues[0]?.code).toBe('baseline_without_lifecycle');
+    expect(result.issues.map((item) => item.code)).toContain('baseline_without_lifecycle');
   });
 
   it('blocks duplicate readings', () => {
@@ -126,6 +131,22 @@ describe('domain validation', () => {
     expect(result.issues[0]?.code).toBe('invalid_billing_reading');
     expect(result.issues.map((item) => item.code)).toContain('overlapping_cycle');
   });
+
+  it('requires replacement events to identify a distinct previous meter', () => {
+    const replacement = { ...meter, id: 'meter-2', serialNumber: 'replacement' };
+    const state = {
+      accounts: [], memberships: [], settings: { householdName: household.name, provider: household.provider, tariffCategory: 'domestic_protected' as const, trackingMode: household.trackingMode, referenceNumber: household.referenceNumber, officialThreshold: 200, personalTarget: 190, cautionThreshold: 180, criticalThreshold: 190, preferredReadingTime: '18:00', readingFrequency: 'daily' as const, notificationsEnabled: false, theme: 'light' as const },
+      household, connections: [{ id: 'connection-1', householdId: household.id, provider: 'LESCO' as const, referenceNumber: 'reference', createdAt: household.createdAt, isActive: true }], meters: [meter, replacement], cycles: [cycle], bills: [], readings: [], lifecycleEvents: [{ id: 'replacement-1', meterId: replacement.id, connectionId: replacement.connectionId, householdId: household.id, type: 'replaced' as const, previousMeterId: meter.id, occurredAt: '2026-01-02T00:00:00.000Z', baselineReading: 0, createdAt: '2026-01-02T00:00:00.000Z' }], auditLogs: [],
+    };
+    expect(validateStateIntegrity(state).isValid).toBe(true);
+    expect(validateStateIntegrity({ ...state, lifecycleEvents: [{ ...state.lifecycleEvents[0], previousMeterId: replacement.id }] }).issues.map((item) => item.code)).toContain('invalid_lifecycle_relationship');
+  });
+
+  it('marks tariff output as an estimate and never as regulatory truth', () => {
+    const estimate = estimateBillAmount(200, true);
+    expect(estimate.authority).toBe('prototype_estimate');
+    expect(estimate.regulatoryStatus).toBe('unverified');
+  });
 });
 
 describe('deterministic consumption', () => {
@@ -159,7 +180,7 @@ describe('deterministic consumption', () => {
 
   it('rejects state readings outside their cycle', () => {
     const state = {
-      settings: { householdName: household.name, provider: household.provider, tariffCategory: 'domestic_protected' as const, trackingMode: household.trackingMode, referenceNumber: household.referenceNumber, officialThreshold: 200, personalTarget: 190, cautionThreshold: 180, criticalThreshold: 190, preferredReadingTime: '18:00', readingFrequency: 'daily' as const, notificationsEnabled: false, theme: 'light' as const },
+      accounts: [], memberships: [], settings: { householdName: household.name, provider: household.provider, tariffCategory: 'domestic_protected' as const, trackingMode: household.trackingMode, referenceNumber: household.referenceNumber, officialThreshold: 200, personalTarget: 190, cautionThreshold: 180, criticalThreshold: 190, preferredReadingTime: '18:00', readingFrequency: 'daily' as const, notificationsEnabled: false, theme: 'light' as const },
       household,
       connections: [], meters: [meter], cycles: [cycle], bills: [], readings: [reading('outside', 101, '2025-12-31T23:00:00.000Z')], lifecycleEvents: [], auditLogs: [],
     };

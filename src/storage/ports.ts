@@ -1,8 +1,11 @@
 import {
   AppSettings,
+  Account,
   AuditRecord,
   BillingCycle,
   Household,
+  HouseholdMembership,
+  CommandContext,
   LescoConnection,
   Meter,
   MeterLifecycleEvent,
@@ -11,6 +14,8 @@ import {
 } from '../types';
 
 export interface PersistenceState {
+  accounts: Account[];
+  memberships: HouseholdMembership[];
   settings: AppSettings;
   household: Household;
   connections: LescoConnection[];
@@ -35,12 +40,14 @@ export interface EnergyRepository {
   updateHousehold(household: Partial<Household>): Promise<Household>;
   getMeters(): Promise<Meter[]>;
   getBillingCycles(): Promise<BillingCycle[]>;
+  getOfficialBills(): Promise<OfficialBill[]>;
   getActiveBillingCycle(): Promise<BillingCycle | null>;
-  saveBillingCycle(cycle: BillingCycle, auditReason?: string): Promise<BillingCycle>;
+  saveBillingCycle(cycle: BillingCycle, auditReason?: string, context?: CommandContext): Promise<BillingCycle>;
+  saveCycleWithOfficialBill(cycle: BillingCycle, bill: OfficialBill, auditReason?: string, context?: CommandContext): Promise<BillingCycle>;
   closeBillingCycle(cycleId: string, finalData?: Partial<BillingCycle>): Promise<BillingCycle>;
   getMeterReadings(cycleId?: string): Promise<MeterReading[]>;
   getLifecycleEvents?(): Promise<MeterLifecycleEvent[]>;
-  addMeterReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading>;
+  addMeterReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>, context?: CommandContext): Promise<MeterReading>;
   updateMeterReading(id: string, updates: Partial<MeterReading>, reason?: string): Promise<MeterReading>;
   deleteMeterReading(id: string, reason?: string): Promise<void>;
   createMeterLifecycleEvent(event: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>): Promise<MeterLifecycleEvent>;
