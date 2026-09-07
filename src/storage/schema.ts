@@ -1,6 +1,7 @@
 import { PersistenceError } from './errors';
 import { PersistenceState } from './ports';
 import { migrateVersionOne } from './migrations';
+import { validateStateIntegrity } from '../domain/validation';
 
 export const CURRENT_SCHEMA_VERSION = 2;
 export const PERSISTENCE_KEY = 'wattwise_persistence_v2';
@@ -60,15 +61,21 @@ export function deserializeState(raw: string): PersistedEnvelope {
   if (parsed.schemaVersion === 1) {
     const migrated = migrateVersionOne(parsed);
     if (!validateState(migrated.state)) throw new PersistenceError('migration_failed', 'Migrated WattWise data failed current schema validation.');
+    const semantic = validateStateIntegrity(migrated.state);
+    if (!semantic.isValid) throw new PersistenceError('migration_failed', semantic.message || 'Migrated WattWise data failed domain integrity validation.');
     return migrated;
   }
   if (parsed.schemaVersion !== CURRENT_SCHEMA_VERSION) throw new PersistenceError('unsupported_schema', 'Persisted WattWise data uses an unsupported schema version.');
   if (!isString(parsed.writtenAt) || !isDataOrigin(parsed.dataOrigin) || !validateState(parsed.state)) {
     throw new PersistenceError('corrupt_data', 'Persisted WattWise data failed structural validation.');
   }
+  const semantic = validateStateIntegrity(parsed.state);
+  if (!semantic.isValid) throw new PersistenceError('corrupt_data', semantic.message || 'Persisted WattWise data failed domain integrity validation.');
   return parsed as unknown as PersistedEnvelope;
 }
 
 export function assertState(state: PersistenceState): void {
   if (!validateState(state)) throw new PersistenceError('corrupt_data', 'The application attempted to persist invalid domain state.');
+  const semantic = validateStateIntegrity(state);
+  if (!semantic.isValid) throw new PersistenceError('corrupt_data', semantic.message || 'The application attempted to persist invalid domain state.');
 }

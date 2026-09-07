@@ -28,6 +28,7 @@ class RecordingRepository implements EnergyRepository {
   async updateMeterReading(): Promise<MeterReading> { throw new Error('unused'); }
   async deleteMeterReading(): Promise<void> { return undefined; }
   async createMeterLifecycleEvent(): Promise<import('../types').MeterLifecycleEvent> { throw new Error('unused'); }
+  async createLifecycleBaseline(): Promise<{ event: import('../types').MeterLifecycleEvent; reading: MeterReading }> { throw new Error('unused'); }
   async getAuditRecords(): Promise<AuditRecord[]> { return []; }
   async exportAllData(): Promise<string> { return ''; }
   async exportReadingsCSV(): Promise<string> { return ''; }
@@ -40,7 +41,7 @@ describe('persistence schema and migrations', () => {
   it('round-trips domain state and preserves timestamp semantics', async () => {
     const adapter = new LocalStorageStateAdapter(createMemoryStorage());
     const state = await adapter.load();
-    const timestamp = '2026-01-01T18:30:00+05:00';
+    const timestamp = '2026-08-12T18:30:00+05:00';
     state.readings[0].reading_timestamp = timestamp;
     await adapter.commit(state);
     const loaded = await adapter.load();
@@ -102,9 +103,46 @@ describe('application and repository boundaries', () => {
     const adapter = new LocalStorageStateAdapter(createMemoryStorage());
     const state = await adapter.load();
     state.readings[0].cycleId = 'cycle-2026-08';
+    state.readings[0].reading_timestamp = '2026-08-01T18:00:00.000Z';
+    state.readings[0].entry_timestamp = '2026-08-01T18:05:00.000Z';
     await adapter.commit(state);
     const repository = new LocalStorageEnergyRepository(adapter);
     await expect(repository.updateMeterReading(state.readings[0].id, { cumulativeKWh: 25 }, 'test')).rejects.toThrowError(/finalized/i);
     expect((await adapter.load()).readings[0].cumulativeKWh).toBe(state.readings[0].cumulativeKWh);
+  });
+
+  it('rejects semantically invalid imports without changing existing state', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const before = await adapter.load();
+    const exported = JSON.parse(await repository.exportAllData()) as { state: typeof before };
+    exported.state.readings[0].cumulativeKWh = -10;
+    const result = await repository.importData(JSON.stringify(exported));
+    expect(result.success).toBe(false);
+    expect((await adapter.load()).readings[0].cumulativeKWh).toBe(before.readings[0].cumulativeKWh);
+  });
+
+  it('rejects finalized-record tampering through import', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const before = await adapter.load();
+    const exported = JSON.parse(await repository.exportAllData()) as { state: typeof before };
+    exported.state.cycles.find((cycle) => cycle.id === 'cycle-2026-08')!.billAmount = 1;
+    const result = await repository.importData(JSON.stringify(exported));
+    expect(result.success).toBe(false);
+    expect((await adapter.load()).cycles.find((cycle) => cycle.id === 'cycle-2026-08')?.billAmount).toBe(2640);
+  });
+
+  it('keeps lifecycle and baseline transitions atomic on validation failure', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const before = await adapter.load();
+    await expect(repository.createLifecycleBaseline(
+      { meterId: 'm-indoor', householdId: 'hh-1', type: 'reset', occurredAt: '2026-09-06T17:00:00.000Z', baselineReading: 0 },
+      { cycleId: 'cycle-2026-09', meterId: 'm-indoor', householdId: 'hh-1', cumulativeKWh: 0, reading_timestamp: '2026-09-10T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' },
+    )).rejects.toThrow();
+    const after = await adapter.load();
+    expect(after.lifecycleEvents).toHaveLength(before.lifecycleEvents.length);
+    expect(after.readings).toHaveLength(before.readings.length);
   });
 });

@@ -7,7 +7,7 @@ import {
   MeterReading,
   MeterLifecycleEvent,
 } from '../types';
-import { validateBillingCycleMutation, validateReadingMutation } from '../domain/validation';
+import { validateBillingCycleMutation, validateReadingMutation, validateStateIntegrity } from '../domain/validation';
 import { DomainOperationError, PersistenceError } from './errors';
 import { EnergyRepository, PersistenceState, StateStore } from './ports';
 import { deserializeState, serializeState } from './schema';
@@ -19,6 +19,12 @@ function id(prefix: string): string {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).sort().join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(',')}}`;
+  return JSON.stringify(value);
 }
 
 function operationFailure(result: { message?: string }): DomainOperationError {
@@ -169,16 +175,38 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     if (!meter || meter.householdId !== eventData.householdId || state.household.id !== eventData.householdId) {
       throw new DomainOperationError('validation_failed', 'Meter lifecycle event has an invalid household or meter relationship.');
     }
-    if (!Number.isFinite(Date.parse(eventData.occurredAt)) || (eventData.baselineReading !== undefined && (!Number.isFinite(eventData.baselineReading) || eventData.baselineReading < 0))) {
-      throw new DomainOperationError('validation_failed', 'Meter lifecycle event contains invalid date or baseline data.');
-    }
+    if (eventData.type === 'rollover') throw new DomainOperationError('validation_failed', 'Rollover events require a configured meter maximum and are not supported by this model.');
+    if (!Number.isFinite(Date.parse(eventData.occurredAt)) || Date.parse(eventData.occurredAt) > Date.now() || ((eventData.type === 'reset' || eventData.type === 'replaced') && (!Number.isFinite(eventData.baselineReading) || (eventData.baselineReading ?? -1) < 0))) throw new DomainOperationError('validation_failed', 'Meter lifecycle event contains invalid date or baseline data.');
     const event: MeterLifecycleEvent = { ...eventData, id: id('meter-event'), createdAt: new Date().toISOString() };
-    state.lifecycleEvents.push(event);
+    const candidateState = clone(state);
+    candidateState.lifecycleEvents.push(event);
     const index = state.meters.findIndex((candidate) => candidate.id === event.meterId);
-    state.meters[index] = { ...state.meters[index], lifecycleEventIds: [...(state.meters[index].lifecycleEventIds || []), event.id] };
-    this.audit(state, 'meter_lifecycle_event', event.id, 'create', null, event, 'Meter lifecycle event recorded');
-    await this.commit(state);
+    candidateState.meters[index] = { ...candidateState.meters[index], lifecycleEventIds: [...(candidateState.meters[index].lifecycleEventIds || []), event.id] };
+    const validation = validateStateIntegrity(candidateState);
+    if (!validation.isValid) throw operationFailure(validation);
+    this.audit(candidateState, 'meter_lifecycle_event', event.id, 'create', null, event, 'Meter lifecycle event recorded');
+    await this.commit(candidateState);
     return event;
+  }
+
+  async createLifecycleBaseline(eventData: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>, readingData: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<{ event: MeterLifecycleEvent; reading: MeterReading }> {
+    const state = await this.state();
+    const meter = state.meters.find((candidate) => candidate.id === eventData.meterId);
+    const cycle = state.cycles.find((candidate) => candidate.id === readingData.cycleId);
+    if (!meter || !cycle || meter.householdId !== eventData.householdId || cycle.householdId !== eventData.householdId || readingData.meterId !== eventData.meterId || readingData.householdId !== eventData.householdId) throw new DomainOperationError('validation_failed', 'Lifecycle baseline has invalid household, meter, or cycle relationships.');
+    const event: MeterLifecycleEvent = { ...eventData, id: id('meter-event'), createdAt: new Date().toISOString() };
+    const reading: MeterReading = { ...readingData, id: id('reading'), entry_timestamp: new Date().toISOString(), isBaseline: true, lifecycleEventId: event.id };
+    const candidateState = clone(state);
+    candidateState.lifecycleEvents.push(event);
+    const meterIndex = candidateState.meters.findIndex((candidate) => candidate.id === event.meterId);
+    candidateState.meters[meterIndex] = { ...candidateState.meters[meterIndex], lifecycleEventIds: [...(candidateState.meters[meterIndex].lifecycleEventIds || []), event.id] };
+    candidateState.readings.push(reading);
+    const validation = validateStateIntegrity(candidateState);
+    if (!validation.isValid) throw operationFailure(validation);
+    this.audit(candidateState, 'meter_lifecycle_event', event.id, 'create', null, event, 'Meter lifecycle event and baseline recorded');
+    this.audit(candidateState, 'meter_reading', reading.id, 'create', null, reading, 'Lifecycle baseline recorded atomically');
+    await this.commit(candidateState);
+    return { event, reading };
   }
 
   async getAuditRecords(): Promise<AuditRecord[]> { return (await this.state()).auditLogs.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)); }
@@ -198,6 +226,16 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
   async importData(jsonData: string): Promise<{ success: boolean; message: string }> {
     try {
       const envelope = deserializeState(jsonData);
+      const existing = await this.state();
+      const finalizedCycleIds = new Set(existing.cycles.filter((cycle) => cycle.status === 'closed' || cycle.status === 'locked').map((cycle) => cycle.id));
+      for (const cycleId of finalizedCycleIds) {
+        const current = existing.cycles.find((cycle) => cycle.id === cycleId);
+        const incoming = envelope.state.cycles.find((cycle) => cycle.id === cycleId);
+        if (!incoming || canonical(current) !== canonical(incoming)) throw new PersistenceError('immutable_record', `Finalized billing cycle ${cycleId} cannot be changed through import.`);
+        const currentReadings = existing.readings.filter((reading) => reading.cycleId === cycleId);
+        const incomingReadings = envelope.state.readings.filter((reading) => reading.cycleId === cycleId);
+        if (canonical(currentReadings) !== canonical(incomingReadings)) throw new PersistenceError('immutable_record', `Readings in finalized billing cycle ${cycleId} cannot be changed through import.`);
+      }
       await this.commit(envelope.state, 'imported_data');
       return { success: true, message: 'Data imported successfully.' };
     } catch (error) {
@@ -218,7 +256,8 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     if (scenarioId === 2) {
       const cycle = await this.getActiveBillingCycle();
       if (cycle) {
-        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, cumulativeKWh: 72, reading_timestamp: '2026-09-05T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid', isBaseline: true });
+        const event = await this.createMeterLifecycleEvent({ meterId: 'm-indoor', householdId: cycle.householdId, type: 'reset', occurredAt: '2026-09-05T17:59:00.000Z', baselineReading: 72, reason: 'Development scenario reset' });
+        await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, cumulativeKWh: 72, reading_timestamp: '2026-09-05T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid', isBaseline: true, lifecycleEventId: event.id });
         await this.addMeterReading({ cycleId: cycle.id, meterId: 'm-indoor', householdId: cycle.householdId, cumulativeKWh: 73.4, reading_timestamp: '2026-09-06T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' });
       }
       return 'Loaded Scenario 2: Added increasing indoor meter readings.';

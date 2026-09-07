@@ -43,6 +43,7 @@ export interface EnergyRepository {
   updateMeterReading(id: string, updates: Partial<MeterReading>, reason?: string): Promise<MeterReading>;
   deleteMeterReading(id: string, reason?: string): Promise<void>;
   createMeterLifecycleEvent(event: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>): Promise<MeterLifecycleEvent>;
+  createLifecycleBaseline(event: Omit<MeterLifecycleEvent, 'id' | 'createdAt'>, reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<{ event: MeterLifecycleEvent; reading: MeterReading }>;
   getAuditRecords(): Promise<AuditRecord[]>;
   exportAllData(): Promise<string>;
   exportReadingsCSV(): Promise<string>;

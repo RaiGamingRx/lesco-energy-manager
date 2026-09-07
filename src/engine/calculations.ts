@@ -33,7 +33,7 @@ export function calculateConsumption(readings: MeterReading[]): {
 
   for (const sequence of sequences.values()) {
     const sorted = sequence.sort(
-      (a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime()
+      (a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime() || a.id.localeCompare(b.id)
     );
     for (let i = 0; i < sorted.length; i++) {
       const current = sorted[i];
@@ -46,7 +46,12 @@ export function calculateConsumption(readings: MeterReading[]): {
       const currTime = new Date(current.reading_timestamp).getTime();
       const hours = Math.max(0.01, (currTime - prevTime) / (1000 * 60 * 60));
       const delta = current.cumulativeKWh - prev.cumulativeKWh;
-      if (delta < 0 && !current.isBaseline) {
+      if (currTime === prevTime && delta !== 0) {
+        error ??= 'Invalid meter sequence: conflicting cumulative values share the same physical timestamp.';
+        processed.push({ ...current, consumptionFromPrevious: undefined, intervalHours: undefined });
+        continue;
+      }
+      if (delta < 0) {
         error ??= `Invalid meter sequence: ${current.cumulativeKWh} kWh is lower than ${prev.cumulativeKWh} kWh.`;
         processed.push({ ...current, consumptionFromPrevious: undefined, intervalHours: undefined });
         continue;

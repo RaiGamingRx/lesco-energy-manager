@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { calculateConsumption } from '../engine/calculations';
 import { BillingCycle, Household, Meter, MeterLifecycleEvent, MeterReading } from '../types';
-import { validateBillingCycleMutation, validateReadingMutation } from './validation';
+import { validateBillingCycleMutation, validateReadingMutation, validateStateIntegrity } from './validation';
 
 const household: Household = {
   id: 'household-1',
@@ -74,7 +74,7 @@ describe('domain validation', () => {
   });
 
   it('allows a reset baseline with a reset event', () => {
-    const result = validateReadingMutation(reading('r2', 0, '2026-01-02T00:00:00.000Z', { isBaseline: true }), context(
+    const result = validateReadingMutation(reading('r2', 0, '2026-01-02T00:00:00.000Z', { isBaseline: true, lifecycleEventId: 'event-1' }), context(
       [reading('r1', 150, '2026-01-01T00:00:00.000Z')],
       [{ id: 'event-1', meterId: meter.id, householdId: household.id, type: 'reset', occurredAt: '2026-01-02T00:00:00.000Z', baselineReading: 0, createdAt: '2026-01-02T00:00:00.000Z' }],
     ));
@@ -84,13 +84,35 @@ describe('domain validation', () => {
   it('allows the first baseline of a replacement meter', () => {
     const replacement: Meter = { ...meter, id: 'meter-2', serialNumber: 'replacement' };
     const result = validateReadingMutation({ ...reading('r2', 0, '2026-01-02T00:00:00.000Z'), meterId: replacement.id, isBaseline: true }, { ...context([]), meter: replacement });
-    expect(result.isValid).toBe(true);
+    expect(result.issues[0]?.code).toBe('baseline_without_lifecycle');
   });
 
   it('blocks duplicate readings', () => {
     const existing = reading('r1', 100, '2026-01-01T00:00:00.000Z');
     const result = validateReadingMutation(reading('r2', 100, '2026-01-01T00:00:00.000Z'), context([existing]));
     expect(result.issues[0]?.code).toBe('duplicate_reading');
+  });
+
+  it('blocks same-time conflicting readings', () => {
+    const existing = reading('r1', 100, '2026-01-01T00:00:00.000Z');
+    const result = validateReadingMutation(reading('r2', 101, existing.reading_timestamp), context([existing]));
+    expect(result.issues[0]?.code).toBe('same_timestamp_conflict');
+  });
+
+  it('checks both chronological neighbors for out-of-order insertion', () => {
+    const result = validateReadingMutation(reading('middle', 105, '2026-01-03T00:00:00.000Z'), context([
+      reading('first', 100, '2026-01-01T00:00:00.000Z'), reading('last', 110, '2026-01-05T00:00:00.000Z'),
+    ]));
+    expect(result.isValid).toBe(true);
+    const decrease = validateReadingMutation(reading('middle', 115, '2026-01-03T00:00:00.000Z'), context([
+      reading('first', 100, '2026-01-01T00:00:00.000Z'), reading('last', 110, '2026-01-05T00:00:00.000Z'),
+    ]));
+    expect(decrease.issues.map((item) => item.code)).toContain('decreasing_reading');
+  });
+
+  it('does not accept a baseline boolean without an authorized event', () => {
+    const result = validateReadingMutation(reading('r2', 0, '2026-01-02T00:00:00.000Z', { isBaseline: true }), context([reading('r1', 150, '2026-01-01T00:00:00.000Z')]));
+    expect(result.issues[0]?.code).toBe('baseline_without_lifecycle');
   });
 
   it('blocks cross-household and cross-cycle relationships', () => {
@@ -124,5 +146,23 @@ describe('deterministic consumption', () => {
     const result = calculateConsumption([reading('r1', 150, '2026-01-01T00:00:00.000Z'), otherMeter, reading('r2', 160, '2026-01-02T00:00:00.000Z')]);
     expect(result.isValid).toBe(true);
     expect(result.totalTrackedUnits).toBe(10);
+  });
+
+  it('does not let a baseline flag contaminate totals with a negative interval', () => {
+    const result = calculateConsumption([
+      reading('r1', 150, '2026-01-01T00:00:00.000Z'),
+      reading('r2', 20, '2026-01-02T00:00:00.000Z', { isBaseline: true }),
+    ]);
+    expect(result.isValid).toBe(false);
+    expect(result.totalTrackedUnits).toBe(0);
+  });
+
+  it('rejects state readings outside their cycle', () => {
+    const state = {
+      settings: { householdName: household.name, provider: household.provider, tariffCategory: 'domestic_protected' as const, trackingMode: household.trackingMode, referenceNumber: household.referenceNumber, officialThreshold: 200, personalTarget: 190, cautionThreshold: 180, criticalThreshold: 190, preferredReadingTime: '18:00', readingFrequency: 'daily' as const, notificationsEnabled: false, theme: 'light' as const },
+      household,
+      connections: [], meters: [meter], cycles: [cycle], bills: [], readings: [reading('outside', 101, '2025-12-31T23:00:00.000Z')], lifecycleEvents: [], auditLogs: [],
+    };
+    expect(validateStateIntegrity(state).issues.map((item) => item.code)).toContain('reading_outside_cycle');
   });
 });
