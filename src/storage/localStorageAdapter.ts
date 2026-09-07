@@ -1,16 +1,19 @@
 import {
   DEFAULT_HOUSEHOLD,
+  DEFAULT_ACCOUNT,
+  DEFAULT_MEMBERSHIP,
   DEFAULT_METERS,
   DEFAULT_SETTINGS,
   SEED_ACTIVE_CYCLE,
   SEED_AUDIT_LOGS,
   SEED_CLOSED_CYCLE,
+  SEED_OFFICIAL_BILLS,
   SEED_READINGS,
 } from './seedData';
 import { PersistenceError } from './errors';
 import { migrateLegacyKeys } from './migrations';
 import { PersistenceState, StateStore } from './ports';
-import { assertState, deserializeState, PERSISTENCE_KEY, serializeState } from './schema';
+import { assertState, CURRENT_SCHEMA_VERSION, deserializeState, PERSISTENCE_KEY, serializeState } from './schema';
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -26,9 +29,12 @@ const LEGACY_KEYS = {
   readings: 'lesco_energy_readings_v1',
   auditLogs: 'lesco_energy_audit_v1',
 };
+const LEGACY_PERSISTENCE_KEYS = ['wattwise_persistence_v2'];
 
 function developmentFixtureState(): PersistenceState {
   return {
+    accounts: [structuredClone(DEFAULT_ACCOUNT)],
+    memberships: [structuredClone(DEFAULT_MEMBERSHIP)],
     settings: structuredClone(DEFAULT_SETTINGS),
     household: structuredClone(DEFAULT_HOUSEHOLD),
     connections: [{
@@ -41,7 +47,7 @@ function developmentFixtureState(): PersistenceState {
     }],
     meters: structuredClone(DEFAULT_METERS).map((meter) => ({ ...meter, isActive: true })),
     cycles: structuredClone([SEED_CLOSED_CYCLE, SEED_ACTIVE_CYCLE]),
-    bills: [],
+    bills: structuredClone(SEED_OFFICIAL_BILLS),
     readings: structuredClone(SEED_READINGS),
     lifecycleEvents: [],
     auditLogs: structuredClone(SEED_AUDIT_LOGS),
@@ -58,8 +64,14 @@ export class LocalStorageStateAdapter implements StateStore {
   }
 
   async load(): Promise<PersistenceState> {
-    const current = this.storage.getItem(PERSISTENCE_KEY);
-    if (current) return deserializeState(current).state;
+    const primary = this.storage.getItem(PERSISTENCE_KEY);
+    const legacy = LEGACY_PERSISTENCE_KEYS.map((key) => this.storage.getItem(key)).find((value): value is string => value !== null);
+    const current = primary || legacy;
+    if (current) {
+      const envelope = deserializeState(current);
+      if (!primary || envelope.schemaVersion !== CURRENT_SCHEMA_VERSION) await this.commit(envelope.state);
+      return envelope.state;
+    }
 
     const legacyRecords = {
       settings: this.storage.getItem(LEGACY_KEYS.settings),

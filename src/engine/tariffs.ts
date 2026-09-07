@@ -69,6 +69,18 @@ export interface TariffSelection {
   regulatoryStatus: 'protected' | 'unprotected' | 'unknown';
 }
 
+export interface TariffEstimate {
+  baseCost: number;
+  electricityDuty: number;
+  tvFee: number;
+  gst: number;
+  totalEstimated: number;
+  isPenaltyZone: boolean;
+  authority: 'prototype_estimate';
+  regulatoryStatus: 'unverified';
+  tariffVersion: string;
+}
+
 export function selectTariff(rule: TariffRule, regulatoryStatus: TariffSelection['regulatoryStatus']): TariffSelection {
   return { rule, regulatoryStatus };
 }
@@ -77,14 +89,7 @@ export function selectTariff(rule: TariffRule, regulatoryStatus: TariffSelection
  * Calculates estimated official bill amount based on units and tariff rules.
  * Clearly separated as a projection/estimate rather than official bill.
  */
-export function estimateBillAmount(units: number, isProtected = true): {
-  baseCost: number;
-  electricityDuty: number;
-  tvFee: number;
-  gst: number;
-  totalEstimated: number;
-  isPenaltyZone: boolean;
-} {
+export function estimateBillAmount(units: number, isProtected = true): TariffEstimate {
   const rule = isProtected ? LESCO_PROTECTED_TARIFF : LESCO_UNPROTECTED_TARIFF;
   const isPenaltyZone = !isProtected;
 
@@ -111,6 +116,9 @@ export function estimateBillAmount(units: number, isProtected = true): {
     gst,
     totalEstimated,
     isPenaltyZone,
+    authority: 'prototype_estimate',
+    regulatoryStatus: 'unverified',
+    tariffVersion: rule.version,
   };
 }
 

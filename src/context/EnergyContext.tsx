@@ -8,6 +8,7 @@ import {
   MeterReading,
   AuditRecord,
   MeterLifecycleEvent,
+  OfficialBill,
 } from '../types';
 import { energyApplication } from '../application/container';
 import { calculateCycleSummary } from '../engine/calculations';
@@ -17,6 +18,7 @@ interface EnergyContextType {
   household: Household | null;
   meters: Meter[];
   cycles: BillingCycle[];
+  bills: OfficialBill[];
   activeCycle: BillingCycle | null;
   readings: MeterReading[];
   lifecycleEvents: MeterLifecycleEvent[];
@@ -31,6 +33,7 @@ interface EnergyContextType {
   updateReading: (id: string, updates: Partial<MeterReading>, reason?: string) => Promise<MeterReading>;
   deleteReading: (id: string, reason?: string) => Promise<void>;
   saveCycle: (cycle: BillingCycle, reason?: string) => Promise<BillingCycle>;
+  saveCycleWithOfficialBill: (cycle: BillingCycle, bill: OfficialBill, reason?: string) => Promise<BillingCycle>;
   closeCycle: (cycleId: string, finalData?: Partial<BillingCycle>) => Promise<BillingCycle>;
   syncOutdoorMeter: (outdoorReading: number) => Promise<void>;
   updateSettings: (settings: Partial<AppSettings>) => Promise<void>;
@@ -49,6 +52,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [household, setHousehold] = useState<Household | null>(null);
   const [meters, setMeters] = useState<Meter[]>([]);
   const [cycles, setCycles] = useState<BillingCycle[]>([]);
+  const [bills, setBills] = useState<OfficialBill[]>([]);
   const [readings, setReadings] = useState<MeterReading[]>([]);
   const [lifecycleEvents, setLifecycleEvents] = useState<MeterLifecycleEvent[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditRecord[]>([]);
@@ -65,6 +69,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setHousehold(snapshot.household);
       setMeters(snapshot.meters);
       setCycles(snapshot.cycles);
+      setBills(snapshot.bills);
       setReadings(snapshot.readings);
       setLifecycleEvents(snapshot.lifecycleEvents);
       setAuditLogs(snapshot.auditLogs);
@@ -91,7 +96,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       settings?.officialThreshold || 200,
       settings?.personalTarget || 190,
       new Date().toISOString(),
-      activeCycle && household && meters[0] ? { householdId: household.id, meterId: meters[0].id, cycleId: activeCycle.id } : undefined,
+      activeCycle && household && meters.find((meter) => meter.id === activeCycle.meterId) ? { householdId: household.id, meterId: activeCycle.meterId, cycleId: activeCycle.id } : undefined,
       lifecycleEvents
     );
   }, [activeCycle, readings, settings, household, meters, lifecycleEvents]);
@@ -115,6 +120,12 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const saveCycle = async (cycle: BillingCycle, reason?: string) => {
     const saved = await energyApplication.createOrUpdateCycle(cycle, reason);
+    await refreshData();
+    return saved;
+  };
+
+  const saveCycleWithOfficialBill = async (cycle: BillingCycle, bill: OfficialBill, reason?: string) => {
+    const saved = await energyApplication.createOrUpdateCycleWithOfficialBill(cycle, bill, reason);
     await refreshData();
     return saved;
   };
@@ -175,6 +186,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         household,
         meters,
         cycles,
+        bills,
         activeCycle,
         readings,
         lifecycleEvents,
@@ -187,6 +199,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         updateReading,
         deleteReading,
         saveCycle,
+        saveCycleWithOfficialBill,
         closeCycle,
         syncOutdoorMeter,
         updateSettings,

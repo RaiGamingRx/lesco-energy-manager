@@ -20,20 +20,48 @@ export type ReadingSource = 'indoor_meter' | 'outdoor_meter' | 'manual';
 
 export type MeterLifecycleEventType = 'installed' | 'replaced' | 'reset' | 'rollover';
 
+export type DataAuthority = 'client_proposed' | 'local_user_data' | 'imported_data' | 'server_authoritative';
+export type RevisionStatus = 'active' | 'finalized' | 'superseded';
+export type OfficialBillSource = 'user_entered' | 'provider_import' | 'ocr_proposed';
+export type OfficialBillExtractionState = 'not_applicable' | 'proposed' | 'verified' | 'rejected';
+
+export interface Account {
+  id: string;
+  email?: string;
+  displayName?: string;
+  createdAt: string;
+}
+
+export type HouseholdRole = 'owner' | 'member' | 'viewer';
+
+export interface HouseholdMembership {
+  id: string;
+  householdId: string;
+  accountId: string;
+  role: HouseholdRole;
+  createdAt: string;
+  revokedAt?: string;
+}
+
 export interface LescoConnection {
   id: string;
   householdId: string;
-  provider: 'LESCO';
+  provider: Provider;
   referenceNumber: string;
   createdAt: string;
   isActive: boolean;
+  version?: number;
 }
+
+export type Connection = LescoConnection;
 
 export interface OfficialBill {
   id: string;
   householdId: string;
   connectionId: string;
   billingCycleId: string;
+  billingPeriodStart: string;
+  billingPeriodEnd: string;
   provider: Provider;
   billReference: string;
   issuedOn: string;
@@ -43,21 +71,30 @@ export interface OfficialBill {
   billedUnits: number;
   amount: number;
   charges: BillCharges;
-  source: 'user_entered' | 'provider_import';
+  source: OfficialBillSource;
+  extractionState: OfficialBillExtractionState;
+  confirmedByAccountId?: string;
+  confirmedAt?: string;
+  documentReference?: string;
+  provenance?: string;
   createdAt: string;
   finalizedAt?: string;
+  version?: number;
+  revisionStatus?: RevisionStatus;
 }
 
 export interface MeterLifecycleEvent {
   id: string;
   meterId: string;
   householdId: string;
+  connectionId: string;
   type: MeterLifecycleEventType;
   occurredAt: string;
   previousMeterId?: string;
   baselineReading?: number;
   reason?: string;
   createdAt: string;
+  version?: number;
 }
 
 export interface ReadingCorrection {
@@ -81,11 +118,13 @@ export interface Household {
   address?: string;
   createdAt: string;
   connectionIds?: string[];
+  version?: number;
 }
 
 export interface Meter {
   id: string;
   householdId: string;
+  connectionId: string;
   name: string;
   type: 'outdoor_lesco_digital' | 'indoor_cumulative_protector' | 'manual_counter';
   unit: 'kWh';
@@ -95,6 +134,7 @@ export interface Meter {
   installedAt?: string;
   retiredAt?: string;
   lifecycleEventIds?: string[];
+  version?: number;
 }
 
 export interface BillCharges {
@@ -110,15 +150,21 @@ export interface BillCharges {
 export interface BillingCycle {
   id: string;
   householdId: string;
+  connectionId: string;
+  meterId: string;
   provider: Provider;
   tariffCategory: TariffCategory;
   billingPeriodStart: string; // ISO Date YYYY-MM-DD
   billingPeriodEnd: string;   // ISO Date YYYY-MM-DD
   officialReadingDate: string; // Actual date LESCO meter reader logged
-  previousOfficialReading: number; // kWh
-  currentOfficialReading: number;  // kWh
-  billedUnits: number; // Official units
-  billAmount: number;  // PKR
+  /** @deprecated Transitional local projection; authoritative provider facts belong to OfficialBill. */
+  previousOfficialReading: number;
+  /** @deprecated Transitional local projection; authoritative provider facts belong to OfficialBill. */
+  currentOfficialReading: number;
+  /** @deprecated Transitional local projection; authoritative provider facts belong to OfficialBill. */
+  billedUnits: number;
+  /** @deprecated Transitional local projection; authoritative provider facts belong to OfficialBill. */
+  billAmount: number;
   status: CycleStatus;
   
   // Outdoor sync & gap units
@@ -127,13 +173,25 @@ export interface BillingCycle {
   gapUnits?: number; // syncOutdoorReading - currentOfficialReading
   indoorResetConfirmed?: boolean;
   
+  /** @deprecated Transitional local projection; use OfficialBill.billReference. */
   billReference?: string;
+  /** @deprecated Transitional local projection; use OfficialBill.charges. */
   applicableCharges: BillCharges;
   notes?: string;
   createdAt: string;
   updatedAt: string;
-  connectionId?: string;
   officialReadingSource?: ReadingSource;
+  officialBillId?: string;
+  version?: number;
+  revisionStatus?: RevisionStatus;
+  /** Transitional local projection; authoritative bill facts belong to OfficialBill. */
+  legacyBillProjection?: {
+    previousReading: number;
+    currentReading: number;
+    billedUnits: number;
+    amount: number;
+    reference?: string;
+  };
 }
 
 export interface MeterReading {
@@ -141,6 +199,7 @@ export interface MeterReading {
   cycleId: string;
   meterId: string;
   householdId: string;
+  connectionId: string;
   cumulativeKWh: number;
   reading_timestamp: string; // Actual time user read meter
   entry_timestamp: string;   // Time user submitted in app
@@ -156,17 +215,42 @@ export interface MeterReading {
   isBaseline?: boolean;
   lifecycleEventId?: string;
   correctionHistory?: ReadingCorrection[];
+  authority?: DataAuthority;
+  version?: number;
+  revisionStatus?: RevisionStatus;
 }
 
 export interface AuditRecord {
   id: string;
-  entityType: 'meter_reading' | 'billing_cycle' | 'meter_lifecycle_event' | 'settings';
+  entityType: 'meter_reading' | 'billing_cycle' | 'official_bill' | 'meter_lifecycle_event' | 'settings';
   entityId: string;
   action: 'create' | 'edit' | 'correction' | 'lock' | 'delete';
   oldValue: unknown;
   newValue: unknown;
   timestamp: string;
   reason?: string;
+  actorAccountId?: string;
+  householdId?: string;
+  correlationId?: string;
+  idempotencyKey?: string;
+  entityVersion?: number;
+  authority?: DataAuthority;
+}
+
+export interface CommandContext {
+  actorAccountId?: string;
+  householdId?: string;
+  correlationId?: string;
+  idempotencyKey?: string;
+  expectedVersion?: number;
+  authoritativeAt?: string;
+}
+
+export interface RevisionConflict {
+  entityType: string;
+  entityId: string;
+  expectedVersion: number;
+  actualVersion: number;
 }
 
 export interface AppSettings {

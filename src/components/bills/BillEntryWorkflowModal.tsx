@@ -3,7 +3,7 @@ import { X, Check, AlertTriangle, ArrowRight, ShieldCheck, Gauge, RotateCcw, Fil
 import { useEnergy } from '../../context/EnergyContext';
 import { validateBillingCycle, validateOutdoorSync } from '../../engine/validation';
 import { calculateGapUnits } from '../../engine/calculations';
-import { BillingCycle, BillCharges } from '../../types';
+import { BillingCycle, BillCharges, OfficialBill } from '../../types';
 import { getDefaultBillCharges } from '../../engine/tariffs';
 import { DataBadge } from '../common/DataBadge';
 
@@ -16,7 +16,7 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { activeCycle, cycles, household, settings, saveCycle, addReading } = useEnergy();
+  const { activeCycle, cycles, household, settings, saveCycleWithOfficialBill, addReading } = useEnergy();
 
   // Multi-step wizard:
   // Step 1: Official bill data entry
@@ -144,9 +144,12 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
 
     const newCycleId = `cycle-${readingDate.slice(0, 7)}-${Math.random().toString(36).substr(2, 4)}`;
 
+    const now = new Date().toISOString();
     const newCycle: BillingCycle = {
       id: newCycleId,
       householdId: household?.id || 'hh-1',
+      connectionId: household?.connectionIds?.[0] || 'connection-lesco-demo',
+      meterId: settings?.trackingMode === 'outdoor_meter' ? 'm-outdoor' : 'm-indoor',
       provider: 'LESCO',
       tariffCategory: settings?.tariffCategory || 'domestic_protected',
       billingPeriodStart: periodStart,
@@ -158,17 +161,39 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
       billAmount: amount,
       status: 'active',
       syncOutdoorReading: sync,
-      syncReadingTimestamp: new Date().toISOString(),
+      syncReadingTimestamp: now,
       gapUnits: parseFloat(gap.toFixed(2)),
       indoorResetConfirmed: indoorResetConfirmed,
       billReference: billRef.trim() || `LESCO-${readingDate}`,
       applicableCharges: charges,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const officialBill: OfficialBill = {
+      id: `bill-${newCycleId}`,
+      householdId: newCycle.householdId,
+      connectionId: newCycle.connectionId,
+      billingCycleId: newCycle.id,
+      billingPeriodStart: newCycle.billingPeriodStart,
+      billingPeriodEnd: newCycle.billingPeriodEnd,
+      provider: newCycle.provider,
+      billReference: newCycle.billReference || `LESCO-${readingDate}`,
+      issuedOn: readingDate,
+      previousReading: prev,
+      currentReading: curr,
+      billedUnits: units,
+      amount,
+      charges,
+      source: 'user_entered',
+      extractionState: 'not_applicable',
+      provenance: 'User-entered official bill fields; not provider-verified.',
+      createdAt: now,
+      finalizedAt: now,
+      revisionStatus: 'finalized',
     };
 
     try {
-      await saveCycle(newCycle, `New cycle opened for bill period ending ${periodEnd}`);
+      await saveCycleWithOfficialBill(newCycle, officialBill, `New cycle opened for bill period ending ${periodEnd}`);
 
       // If indoor meter was reset, log initial baseline reading 0.00
       if (settings?.trackingMode === 'indoor_cumulative' && indoorResetConfirmed) {
@@ -176,6 +201,7 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
           cycleId: newCycleId,
           meterId: 'm-indoor',
           householdId: household?.id || 'hh-1',
+          connectionId: newCycle.connectionId,
           cumulativeKWh: 0.0,
           reading_timestamp: new Date().toISOString(),
           source: 'indoor_meter',

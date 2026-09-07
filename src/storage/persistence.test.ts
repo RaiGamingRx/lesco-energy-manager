@@ -20,8 +20,10 @@ class RecordingRepository implements EnergyRepository {
   async updateHousehold(value: Partial<Household>): Promise<Household> { Object.assign(this.household, value); return this.household; }
   async getMeters(): Promise<Meter[]> { return []; }
   async getBillingCycles(): Promise<BillingCycle[]> { return []; }
+  async getOfficialBills(): Promise<import('../types').OfficialBill[]> { return []; }
   async getActiveBillingCycle(): Promise<BillingCycle | null> { return null; }
   async saveBillingCycle(cycle: BillingCycle): Promise<BillingCycle> { return cycle; }
+  async saveCycleWithOfficialBill(cycle: BillingCycle): Promise<BillingCycle> { return cycle; }
   async closeBillingCycle(cycleId: string): Promise<BillingCycle> { throw new Error(cycleId); }
   async getMeterReadings(): Promise<MeterReading[]> { return []; }
   async addMeterReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading> { this.createdReading = reading; return { ...reading, id: 'r-1', entry_timestamp: '2026-01-01T00:00:00.000Z' }; }
@@ -64,12 +66,22 @@ describe('persistence schema and migrations', () => {
     });
     expect(migrated.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(migrated.state.settings).toEqual({ householdName: 'Legacy' });
-    expect(migrated.state.connections).toEqual([]);
+    expect(migrated.state.connections).toHaveLength(1);
   });
 
   it('loads a version 1 envelope through the adapter migration path', async () => {
     const state = await new LocalStorageStateAdapter(createMemoryStorage()).load();
     const storage = createMemoryStorage({ [PERSISTENCE_KEY]: JSON.stringify({ schemaVersion: 1, state }) });
+    const loaded = await new LocalStorageStateAdapter(storage).load();
+    expect(loaded.household.id).toBe(state.household.id);
+    expect(deserializeState(storage.getItem(PERSISTENCE_KEY) || '').schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it('discovers and rewrites the previous v2 persistence key', async () => {
+    const state = await new LocalStorageStateAdapter(createMemoryStorage()).load();
+    const envelope = JSON.parse(serializeState(state)) as { schemaVersion: number; state: typeof state };
+    envelope.schemaVersion = 2;
+    const storage = createMemoryStorage({ wattwise_persistence_v2: JSON.stringify(envelope) });
     const loaded = await new LocalStorageStateAdapter(storage).load();
     expect(loaded.household.id).toBe(state.household.id);
     expect(deserializeState(storage.getItem(PERSISTENCE_KEY) || '').schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
@@ -84,7 +96,7 @@ describe('application and repository boundaries', () => {
   it('routes application operations through the repository port', async () => {
     const repository = new RecordingRepository();
     const service = new EnergyApplicationService(repository);
-    const reading = { cycleId: 'c-1', meterId: 'm-1', householdId: 'h-1', cumulativeKWh: 10, reading_timestamp: '2026-01-01T00:00:00.000Z', source: 'manual' as const, validationStatus: 'valid' as const };
+    const reading = { cycleId: 'c-1', meterId: 'm-1', householdId: 'h-1', connectionId: 'connection-1', cumulativeKWh: 10, reading_timestamp: '2026-01-01T00:00:00.000Z', source: 'manual' as const, validationStatus: 'valid' as const };
     await service.createReading(reading);
     expect(repository.createdReading).toEqual(reading);
   });
@@ -94,7 +106,7 @@ describe('application and repository boundaries', () => {
     const adapter = new LocalStorageStateAdapter(storage);
     const repository = new LocalStorageEnergyRepository(adapter);
     const before = (await adapter.load()).readings.length;
-    await expect(repository.addMeterReading({ cycleId: 'cycle-2026-09', meterId: 'm-indoor', householdId: 'wrong-household', cumulativeKWh: -1, reading_timestamp: '2026-01-01T00:00:00.000Z', source: 'manual', validationStatus: 'valid' })).rejects.toThrow();
+    await expect(repository.addMeterReading({ cycleId: 'cycle-2026-09', meterId: 'm-indoor', householdId: 'wrong-household', connectionId: 'connection-lesco-demo', cumulativeKWh: -1, reading_timestamp: '2026-01-01T00:00:00.000Z', source: 'manual', validationStatus: 'valid' })).rejects.toThrow();
     expect((await adapter.load()).readings.length).toBe(before);
     expect(storage.getItem(PERSISTENCE_KEY)).toBeTruthy();
   });
@@ -103,6 +115,7 @@ describe('application and repository boundaries', () => {
     const adapter = new LocalStorageStateAdapter(createMemoryStorage());
     const state = await adapter.load();
     state.readings[0].cycleId = 'cycle-2026-08';
+    state.readings[0].meterId = 'm-outdoor';
     state.readings[0].reading_timestamp = '2026-08-01T18:00:00.000Z';
     state.readings[0].entry_timestamp = '2026-08-01T18:05:00.000Z';
     await adapter.commit(state);
@@ -138,11 +151,59 @@ describe('application and repository boundaries', () => {
     const repository = new LocalStorageEnergyRepository(adapter);
     const before = await adapter.load();
     await expect(repository.createLifecycleBaseline(
-      { meterId: 'm-indoor', householdId: 'hh-1', type: 'reset', occurredAt: '2026-09-06T17:00:00.000Z', baselineReading: 0 },
-      { cycleId: 'cycle-2026-09', meterId: 'm-indoor', householdId: 'hh-1', cumulativeKWh: 0, reading_timestamp: '2026-09-10T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' },
+      { meterId: 'm-indoor', connectionId: 'connection-lesco-demo', householdId: 'hh-1', type: 'reset', occurredAt: '2026-09-06T17:00:00.000Z', baselineReading: 0 },
+      { cycleId: 'cycle-2026-09', meterId: 'm-indoor', householdId: 'hh-1', connectionId: 'connection-lesco-demo', cumulativeKWh: 0, reading_timestamp: '2026-09-10T18:00:00.000Z', source: 'indoor_meter', validationStatus: 'valid' },
     )).rejects.toThrow();
     const after = await adapter.load();
     expect(after.lifecycleEvents).toHaveLength(before.lifecycleEvents.length);
     expect(after.readings).toHaveLength(before.readings.length);
+  });
+
+  it('rejects a second active cycle through the normal repository write path', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const active = (await adapter.load()).cycles.find((cycle) => cycle.status === 'active')!;
+    await expect(repository.saveBillingCycle({ ...active, id: 'cycle-2026-10', billingPeriodStart: '2026-09-10', billingPeriodEnd: '2026-10-09', officialReadingDate: '2026-09-10' })).rejects.toThrow(/active/i);
+  });
+
+  it('persists a cycle and its OfficialBill atomically', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const active = (await adapter.load()).cycles.find((cycle) => cycle.status === 'active')!;
+    const bill = {
+      id: 'bill-new-cycle', householdId: active.householdId, connectionId: active.connectionId, billingCycleId: active.id,
+      billingPeriodStart: active.billingPeriodStart, billingPeriodEnd: active.billingPeriodEnd, provider: active.provider,
+      billReference: 'TEST-BILL', issuedOn: active.officialReadingDate, previousReading: active.previousOfficialReading,
+      currentReading: active.currentOfficialReading, billedUnits: active.billedUnits, amount: active.billAmount,
+      charges: active.applicableCharges, source: 'user_entered' as const, extractionState: 'not_applicable' as const,
+      createdAt: '2026-09-07T00:00:00.000Z', finalizedAt: '2026-09-07T00:00:00.000Z', revisionStatus: 'finalized' as const,
+    };
+    const saved = await repository.saveCycleWithOfficialBill({ ...active, id: 'cycle-with-bill', status: 'draft', billingPeriodStart: '2026-09-10', billingPeriodEnd: '2026-10-09', officialReadingDate: '2026-09-10', previousOfficialReading: 1500, currentOfficialReading: 1500, billedUnits: 0, billAmount: 0 }, { ...bill, billingCycleId: 'cycle-with-bill', billingPeriodStart: '2026-09-10', billingPeriodEnd: '2026-10-09' });
+    expect(saved.officialBillId).toBe('bill-new-cycle');
+    expect((await repository.getOfficialBills()).some((item) => item.id === 'bill-new-cycle')).toBe(true);
+  });
+
+  it('rejects stale cycle versions and records actor/tenant audit context', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const active = (await adapter.load()).cycles.find((cycle) => cycle.status === 'active')!;
+    const saved = await repository.saveBillingCycle(active, 'versioned update', { actorAccountId: 'account-1', householdId: active.householdId, correlationId: 'request-1', idempotencyKey: 'idem-1', expectedVersion: 0, authoritativeAt: '2026-09-07T00:00:00.000Z' });
+    expect(saved.version).toBe(1);
+    await expect(repository.saveBillingCycle(saved, 'stale update', { expectedVersion: 0 })).rejects.toThrow(/stale/i);
+    const audit = (await repository.getAuditRecords())[0];
+    expect(audit.actorAccountId).toBe('account-1');
+    expect(audit.householdId).toBe(active.householdId);
+    expect(audit.idempotencyKey).toBe('idem-1');
+  });
+
+  it('rejects imported readings with a forged connection context atomically', async () => {
+    const adapter = new LocalStorageStateAdapter(createMemoryStorage());
+    const repository = new LocalStorageEnergyRepository(adapter);
+    const before = await adapter.load();
+    const exported = JSON.parse(await repository.exportAllData()) as { state: typeof before };
+    exported.state.readings[0].connectionId = 'forged-connection';
+    const result = await repository.importData(JSON.stringify(exported));
+    expect(result.success).toBe(false);
+    expect((await adapter.load()).readings[0].connectionId).toBe(before.readings[0].connectionId);
   });
 });

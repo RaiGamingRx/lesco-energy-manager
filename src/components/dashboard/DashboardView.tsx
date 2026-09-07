@@ -263,7 +263,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-500 font-medium">Estimated LESCO Charges (PKR)</span>
-              <span className="text-[11px] font-medium text-slate-500">Domestic Protected</span>
+              <span className="text-[11px] font-medium text-slate-500">Prototype estimate · status unverified</span>
             </div>
 
             <div className="mt-3 flex items-baseline gap-3">

@@ -103,6 +103,7 @@ export const AddReadingModal: React.FC<AddReadingModalProps> = ({ isOpen, onClos
         cycleId: activeCycle.id,
         meterId: targetMeter ? targetMeter.id : 'm-1',
         householdId: activeCycle.householdId,
+        connectionId: targetMeter?.connectionId || activeCycle.connectionId,
         cumulativeKWh: parseFloat(cumulativeKWh),
         reading_timestamp: effectiveReadingTimestamp,
         source: settings?.trackingMode === 'outdoor_meter' ? 'outdoor_meter' : 'indoor_meter',
