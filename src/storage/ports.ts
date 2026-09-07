@@ -39,6 +39,7 @@ export interface EnergyRepository {
   saveBillingCycle(cycle: BillingCycle, auditReason?: string): Promise<BillingCycle>;
   closeBillingCycle(cycleId: string, finalData?: Partial<BillingCycle>): Promise<BillingCycle>;
   getMeterReadings(cycleId?: string): Promise<MeterReading[]>;
+  getLifecycleEvents?(): Promise<MeterLifecycleEvent[]>;
   addMeterReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading>;
   updateMeterReading(id: string, updates: Partial<MeterReading>, reason?: string): Promise<MeterReading>;
   deleteMeterReading(id: string, reason?: string): Promise<void>;

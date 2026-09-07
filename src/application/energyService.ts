@@ -16,6 +16,7 @@ export interface EnergySnapshot {
   meters: Meter[];
   cycles: BillingCycle[];
   readings: MeterReading[];
+  lifecycleEvents: MeterLifecycleEvent[];
   auditLogs: AuditRecord[];
 }
 
@@ -24,15 +25,16 @@ export class EnergyApplicationService {
   constructor(private readonly repository: EnergyRepository) {}
 
   async loadSnapshot(): Promise<EnergySnapshot> {
-    const [settings, household, meters, cycles, readings, auditLogs] = await Promise.all([
+    const [settings, household, meters, cycles, readings, lifecycleEvents, auditLogs] = await Promise.all([
       this.repository.getSettings(),
       this.repository.getHousehold(),
       this.repository.getMeters(),
       this.repository.getBillingCycles(),
       this.repository.getMeterReadings(),
+      this.repository.getLifecycleEvents ? this.repository.getLifecycleEvents() : Promise.resolve([]),
       this.repository.getAuditRecords(),
     ]);
-    return { settings, household, meters, cycles, readings, auditLogs };
+    return { settings, household, meters, cycles, readings, lifecycleEvents, auditLogs };
   }
 
   createReading(reading: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading> {

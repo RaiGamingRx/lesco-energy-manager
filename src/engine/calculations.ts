@@ -1,391 +1,204 @@
-import {
-  BillingCycle,
-  CalculationSummary,
-  MeterReading,
-  ThresholdStatus,
-  TrackingMode,
-} from '../types';
+import { BillingCycle, CalculationSummary, MeterLifecycleEvent, MeterReading, ThresholdStatus, TrackingMode } from '../types';
 
-/**
- * Calculates consumption between consecutive readings sorted by reading_timestamp.
- * Crucial: Uses physical reading_timestamp, never entry_timestamp.
- */
-export function calculateConsumption(readings: MeterReading[]): {
-  processedReadings: MeterReading[];
-  totalTrackedUnits: number;
-  isValid: boolean;
-  error?: string;
-} {
-  if (!readings || readings.length === 0) {
-    return { processedReadings: [], totalTrackedUnits: 0, isValid: true };
-  }
+export type CalculationDataQuality = 'VALID' | 'INSUFFICIENT_DATA' | 'PARTIAL' | 'INVALID' | 'CONFLICTED' | 'UNSUPPORTED';
+export type CalculationRiskStatus = 'ON_TRACK' | 'AT_RISK' | 'PROJECTED_OVER_TARGET' | 'INSUFFICIENT_DATA' | 'INVALID_DATA' | 'UNSUPPORTED';
+export type CalculationIntervalStatus = 'VALID' | 'DUPLICATE' | 'BOUNDARY' | 'INVALID';
+export type CalculationAnomalyCode = 'DECREASING_CUMULATIVE_READING' | 'CONFLICTING_SAME_TIME_OBSERVATION' | 'DUPLICATE_OBSERVATION' | 'ZERO_DURATION_INTERVAL' | 'NEGATIVE_DURATION_INTERVAL' | 'INVALID_TIMESTAMP' | 'MISSING_PREDECESSOR' | 'LIFECYCLE_TRANSITION_BOUNDARY' | 'UNAUTHORIZED_BASELINE' | 'UNSUPPORTED_ROLLOVER' | 'INSUFFICIENT_OBSERVATIONS' | 'INVALID_CYCLE' | 'CROSS_ENTITY_CONTAMINATION' | 'INCOMPLETE_INTERVAL_SEQUENCE' | 'INVALID_NUMERIC_VALUE' | 'INVALID_TARGET' | 'INCONSISTENT_GAP';
 
-  let totalTracked = 0;
-  const processed: MeterReading[] = [];
-  let error: string | undefined;
-  const sequences = new Map<string, MeterReading[]>();
-  for (const reading of readings) {
-    const key = `${reading.householdId}:${reading.meterId}:${reading.cycleId}`;
-    const sequence = sequences.get(key) ?? [];
-    sequence.push(reading);
-    sequences.set(key, sequence);
-  }
+export interface CalculationAnomaly { code: CalculationAnomalyCode; readingIds?: string[]; lifecycleEventId?: string; detail?: string }
+export interface CalculationInterval {
+  previousReadingId?: string;
+  currentReadingId: string;
+  previousReading?: number;
+  currentReading: number;
+  previousReadingAt?: string;
+  currentReadingAt: string;
+  elapsedDays?: number;
+  consumptionKwh?: number;
+  status: CalculationIntervalStatus;
+  lifecycleEventId?: string;
+}
+export interface CalculationScope { householdId: string; meterId: string; cycleId: string }
+export interface CalculationOptions { asOf: string; scope?: CalculationScope; lifecycleEvents?: MeterLifecycleEvent[]; targetKwh?: number }
+export interface MeterCalculationResult {
+  scope?: CalculationScope;
+  actualConsumptionKwh: number;
+  currentCumulativeKwh?: number;
+  observedRateKwhPerDay?: number;
+  dataQuality: CalculationDataQuality;
+  validIntervalCount: number;
+  invalidIntervalCount: number;
+  intervals: CalculationInterval[];
+  anomalies: CalculationAnomaly[];
+}
+export interface CycleCalculationResult extends MeterCalculationResult {
+  cycleId: string;
+  targetKwh?: number;
+  targetProgressPercent?: number;
+  remainingTargetKwh?: number;
+  targetOverrunKwh?: number;
+  projectedEndCycleKwh?: number;
+  projectedOverrunKwh?: number;
+  elapsedCyclePercent?: number;
+  remainingCyclePercent?: number;
+  totalCycleDays?: number;
+  elapsedCycleDays?: number;
+  remainingCycleDays?: number;
+  riskStatus: CalculationRiskStatus;
+}
 
-  for (const sequence of sequences.values()) {
-    const sorted = sequence.sort(
-      (a, b) => new Date(a.reading_timestamp).getTime() - new Date(b.reading_timestamp).getTime() || a.id.localeCompare(b.id)
-    );
-    for (let i = 0; i < sorted.length; i++) {
-      const current = sorted[i];
-      if (i === 0) {
-        processed.push({ ...current, consumptionFromPrevious: 0, intervalHours: 0 });
-        continue;
-      }
-      const prev = sorted[i - 1];
-      const prevTime = new Date(prev.reading_timestamp).getTime();
-      const currTime = new Date(current.reading_timestamp).getTime();
-      const hours = Math.max(0.01, (currTime - prevTime) / (1000 * 60 * 60));
-      const delta = current.cumulativeKWh - prev.cumulativeKWh;
-      if (currTime === prevTime && delta !== 0) {
-        error ??= 'Invalid meter sequence: conflicting cumulative values share the same physical timestamp.';
-        processed.push({ ...current, consumptionFromPrevious: undefined, intervalHours: undefined });
-        continue;
-      }
-      if (delta < 0) {
-        error ??= `Invalid meter sequence: ${current.cumulativeKWh} kWh is lower than ${prev.cumulativeKWh} kWh.`;
-        processed.push({ ...current, consumptionFromPrevious: undefined, intervalHours: undefined });
-        continue;
-      }
-      totalTracked += delta;
-      processed.push({ ...current, consumptionFromPrevious: parseFloat(delta.toFixed(2)), intervalHours: parseFloat(hours.toFixed(2)) });
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const DEFAULT_REFERENCE_TIME = '1970-01-01T00:00:00.000Z';
+const finite = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value);
+const round = (value: number, digits = 2): number => { const factor = 10 ** digits; return Math.round((value + Number.EPSILON) * factor) / factor; };
+const makeAnomaly = (code: CalculationAnomalyCode, detail?: string, readingIds?: string[], lifecycleEventId?: string): CalculationAnomaly => ({ code, ...(detail ? { detail } : {}), ...(readingIds ? { readingIds } : {}), ...(lifecycleEventId ? { lifecycleEventId } : {}) });
+
+function authorizedBoundary(reading: MeterReading, events: MeterLifecycleEvent[]): MeterLifecycleEvent | undefined {
+  if (!reading.isBaseline || !reading.lifecycleEventId) return undefined;
+  return events.find((event) => event.id === reading.lifecycleEventId && (event.type === 'reset' || event.type === 'replaced') && event.meterId === reading.meterId && event.householdId === reading.householdId && Date.parse(event.occurredAt) <= Date.parse(reading.reading_timestamp) && event.baselineReading === reading.cumulativeKWh);
+}
+
+function canonicalReadings(readings: MeterReading[], scope?: CalculationScope): { readings: MeterReading[]; anomalies: CalculationAnomaly[] } {
+  const scoped = scope ? readings.filter((reading) => reading.householdId === scope.householdId && reading.meterId === scope.meterId && reading.cycleId === scope.cycleId) : [...readings];
+  const anomalies = scope && scoped.length !== readings.length ? [makeAnomaly('CROSS_ENTITY_CONTAMINATION')] : [];
+  return { readings: [...scoped].sort((left, right) => Date.parse(left.reading_timestamp) - Date.parse(right.reading_timestamp) || left.id.localeCompare(right.id)), anomalies };
+}
+
+/** Authoritative, deterministic cumulative-meter calculation. */
+export function calculateMeterConsumption(readings: MeterReading[], options: CalculationOptions): MeterCalculationResult {
+  const { readings: sorted, anomalies } = canonicalReadings(readings, options.scope);
+  const events = options.lifecycleEvents ?? [];
+  const intervals: CalculationInterval[] = [];
+  let actualConsumptionKwh = 0;
+  let validIntervalCount = 0;
+  let invalidIntervalCount = 0;
+  let sequenceBroken = false;
+  const seen = new Map<string, MeterReading>();
+  for (const reading of sorted) {
+    const timestamp = Date.parse(reading.reading_timestamp);
+    if (!finite(reading.cumulativeKWh) || reading.cumulativeKWh < 0 || !Number.isFinite(timestamp)) {
+      anomalies.push(makeAnomaly(!Number.isFinite(timestamp) ? 'INVALID_TIMESTAMP' : 'INVALID_NUMERIC_VALUE', undefined, [reading.id]));
+      invalidIntervalCount += 1;
+      sequenceBroken = true;
+      continue;
     }
-  }
-
-  return {
-    processedReadings: processed,
-    totalTrackedUnits: parseFloat(totalTracked.toFixed(2)),
-    isValid: !error,
-    error,
-  };
-}
-
-/**
- * Gap Units = Outdoor meter reading at synchronization - Current LESCO reading from the bill
- */
-export function calculateGapUnits(
-  outdoorSyncReading: number | undefined,
-  currentOfficialReading: number | undefined
-): number {
-  if (
-    outdoorSyncReading === undefined ||
-    currentOfficialReading === undefined ||
-    isNaN(outdoorSyncReading) ||
-    isNaN(currentOfficialReading)
-  ) {
-    return 0;
-  }
-  const gap = outdoorSyncReading - currentOfficialReading;
-  return gap > 0 ? parseFloat(gap.toFixed(2)) : 0;
-}
-
-/**
- * Calculates remaining units before target or ceiling.
- */
-export function calculateRemainingUnits(currentUsage: number, target: number): number {
-  const remaining = target - currentUsage;
-  return parseFloat(remaining.toFixed(2));
-}
-
-/**
- * Safe daily allowance = remaining units / days remaining.
- */
-export function calculateDailyAllowance(remainingUnits: number, daysRemaining: number): number {
-  if (daysRemaining <= 0) return 0;
-  if (remainingUnits <= 0) return 0;
-  return parseFloat((remainingUnits / daysRemaining).toFixed(2));
-}
-
-/**
- * Evaluates the status zone for the current or projected usage.
- * 0-179 -> On Track
- * 180-189 -> Safety Zone
- * 190-199 -> Very Close
- * 200+ -> Threshold Exceeded
- */
-export function calculateThresholdRisk(
-  usage: number,
-  officialCeiling = 200,
-  personalTarget = 190
-): ThresholdStatus {
-  if (usage >= officialCeiling) {
-    return {
-      zone: 'exceeded',
-      label: 'THRESHOLD EXCEEDED',
-      colorClass: 'text-rose-700',
-      bgClass: 'bg-rose-50',
-      borderClass: 'border-rose-200',
-      description: `Critical: Usage is at or above ${officialCeiling} kWh. Protected tariff status is lost, risking heavy surcharge rates.`,
-    };
-  }
-  if (usage >= personalTarget) {
-    return {
-      zone: 'very_close',
-      label: 'VERY CLOSE',
-      colorClass: 'text-amber-700',
-      bgClass: 'bg-amber-50',
-      borderClass: 'border-amber-200',
-      description: `Alert: Within ${(officialCeiling - usage).toFixed(1)} kWh of the ${officialCeiling} kWh threshold. Strict conservation recommended.`,
-    };
-  }
-  if (usage >= 180) {
-    return {
-      zone: 'safety_zone',
-      label: 'SAFETY ZONE',
-      colorClass: 'text-blue-700',
-      bgClass: 'bg-blue-50',
-      borderClass: 'border-blue-200',
-      description: `Caution: Reached the caution buffer (180+ kWh). Keep daily pace low to stay under personal target (${personalTarget} kWh).`,
-    };
-  }
-  return {
-    zone: 'on_track',
-    label: 'ON TRACK',
-    colorClass: 'text-emerald-700',
-    bgClass: 'bg-emerald-50',
-    borderClass: 'border-emerald-200',
-    description: `Healthy: Currently pacing safely below the ${personalTarget} kWh safety target and ${officialCeiling} kWh ceiling.`,
-  };
-}
-
-/**
- * Comprehensive calculation engine for an active billing cycle and its meter readings.
- */
-export function calculateCycleSummary(
-  cycle: BillingCycle | null,
-  readings: MeterReading[],
-  trackingMode: TrackingMode = 'indoor_cumulative',
-  officialCeiling = 200,
-  personalTarget = 190
-): CalculationSummary {
-  if (!cycle) {
-    return {
-      cycleId: '',
-      totalTrackedUnits: 0,
-      gapUnits: 0,
-      currentEstimatedCycleUnits: 0,
-      officialCeiling,
-      personalTarget,
-      remainingUnitsOfficial: officialCeiling,
-      remainingUnitsPersonal: personalTarget,
-      daysInCycle: 30,
-      daysElapsed: 0,
-      daysRemaining: 30,
-      currentDailyAverage: 0,
-      recentDailyAverage: 0,
-      safeDailyAllowanceOfficial: parseFloat((officialCeiling / 30).toFixed(2)),
-      safeDailyAllowancePersonal: parseFloat((personalTarget / 30).toFixed(2)),
-      projectedFinalUsage: 0,
-      forecastConfidence: 'limited_data',
-      forecastMethod: 'cycle_average',
-      paceDifferencePerDay: 0,
-      status: calculateThresholdRisk(0, officialCeiling, personalTarget),
-      dataQuality: 'valid',
-      currentUsage: 0,
-      projectedUsage: 0,
-      projectedRisk: calculateThresholdRisk(0, officialCeiling, personalTarget),
-    };
-  }
-
-  // 1. Calculate Gap Units from Outdoor sync
-  const gapUnits = calculateGapUnits(cycle.syncOutdoorReading, cycle.currentOfficialReading);
-
-  // 2. Calculate consumption from readings
-  const cycleReadings = readings.filter((r) => r.cycleId === cycle.id);
-  const { processedReadings, totalTrackedUnits, isValid, error } = calculateConsumption(cycleReadings);
-
-  // Mode differences:
-  // For indoor meter, usage in cycle = gapUnits + cumulative meter delta
-  // For outdoor meter mode, usage in cycle = latest outdoor reading - currentOfficialReading from bill
-  // For manual usage, totalTrackedUnits is direct
-  let estimatedCycleUnits = 0;
-  if (trackingMode === 'outdoor_meter') {
-    if (cycleReadings.length > 0) {
-      const latestReading = cycleReadings[cycleReadings.length - 1].cumulativeKWh;
-      const outdoorDelta = latestReading - cycle.currentOfficialReading;
-      estimatedCycleUnits = outdoorDelta;
-    } else {
-      estimatedCycleUnits = gapUnits;
+    const duplicateKey = `${reading.reading_timestamp}:${reading.cumulativeKWh}`;
+    if (seen.has(duplicateKey)) { anomalies.push(makeAnomaly('DUPLICATE_OBSERVATION', undefined, [seen.get(duplicateKey)!.id, reading.id])); continue; }
+    seen.set(duplicateKey, reading);
+    const sameTime = sorted.filter((candidate) => candidate.reading_timestamp === reading.reading_timestamp && finite(candidate.cumulativeKWh));
+    if (sameTime.some((candidate) => candidate.cumulativeKWh !== reading.cumulativeKWh)) {
+      anomalies.push(makeAnomaly('CONFLICTING_SAME_TIME_OBSERVATION', undefined, sameTime.map((candidate) => candidate.id)));
+      invalidIntervalCount += 1;
+      sequenceBroken = true;
+      intervals.push({ currentReadingId: reading.id, currentReading: reading.cumulativeKWh, currentReadingAt: reading.reading_timestamp, status: 'INVALID' });
+      continue;
     }
-  } else {
-    // Mode A: indoor cumulative or Mode C: manual
-    estimatedCycleUnits = gapUnits + totalTrackedUnits;
-  }
-  estimatedCycleUnits = parseFloat(estimatedCycleUnits.toFixed(2));
-
-  // 3. Billing cycle date calculations
-  const startDate = new Date(cycle.billingPeriodStart).getTime();
-  const endDate = new Date(cycle.billingPeriodEnd).getTime();
-  const now = Date.parse(cycle.updatedAt);
-
-  const totalCycleMs = Math.max(24 * 60 * 60 * 1000, endDate - startDate);
-  const daysInCycle = Math.max(1, Math.round(totalCycleMs / (1000 * 60 * 60 * 24)));
-
-  // Days elapsed since bill official reading or cycle start
-  const refStart = cycle.officialReadingDate
-    ? new Date(cycle.officialReadingDate).getTime()
-    : startDate;
-  const elapsedMs = Math.max(0, Math.min(now - refStart, totalCycleMs));
-  const daysElapsed = Math.max(0.5, elapsedMs / (1000 * 60 * 60 * 24));
-  const daysRemaining = Math.max(0, Math.round((endDate - now) / (1000 * 60 * 60 * 24)));
-
-  // 4. Daily averages
-  const currentDailyAverage = parseFloat((estimatedCycleUnits / daysElapsed).toFixed(2));
-
-  // 5. Recent daily average (Weighted last 3-5 days if available)
-  let recentDailyAverage = currentDailyAverage;
-  let forecastConfidence: 'high' | 'medium' | 'limited_data' = 'limited_data';
-  let forecastMethod: 'recent_trend' | 'cycle_average' = 'cycle_average';
-
-  if (processedReadings.length >= 3) {
-    // Take readings in the last 4 days
-    const recentThreshold = now - 4 * 24 * 60 * 60 * 1000;
-    const recentReadings = processedReadings.filter(
-      (r) => new Date(r.reading_timestamp).getTime() >= recentThreshold
-    );
-
-    if (recentReadings.length >= 2) {
-      const firstRecent = recentReadings[0];
-      const lastRecent = recentReadings[recentReadings.length - 1];
-      const recentKWh = lastRecent.cumulativeKWh - firstRecent.cumulativeKWh;
-      const recentHours =
-        (new Date(lastRecent.reading_timestamp).getTime() -
-          new Date(firstRecent.reading_timestamp).getTime()) /
-        (1000 * 60 * 60);
-
-      if (recentHours >= 12) {
-        const recentPace = (recentKWh / recentHours) * 24;
-        // Weight recent 65%, full cycle average 35%
-        recentDailyAverage = parseFloat((recentPace * 0.65 + currentDailyAverage * 0.35).toFixed(2));
-        forecastConfidence = recentHours >= 48 ? 'high' : 'medium';
-        forecastMethod = 'recent_trend';
-      }
+    const previous = [...seen.values()].filter((candidate) => candidate.reading_timestamp < reading.reading_timestamp).at(-1);
+    if (!previous) continue;
+    if (sequenceBroken) {
+      anomalies.push(makeAnomaly('INCOMPLETE_INTERVAL_SEQUENCE', undefined, [previous.id, reading.id]));
+      sequenceBroken = false;
+      continue;
     }
-  }
-
-  // 6. Safe daily allowance
-  const remainingUnitsOfficial = calculateRemainingUnits(estimatedCycleUnits, officialCeiling);
-  const remainingUnitsPersonal = calculateRemainingUnits(estimatedCycleUnits, personalTarget);
-
-  const safeDailyAllowanceOfficial = calculateDailyAllowance(remainingUnitsOfficial, daysRemaining);
-  const safeDailyAllowancePersonal = calculateDailyAllowance(remainingUnitsPersonal, daysRemaining);
-
-  // 7. Projected final usage
-  // Projected = Current estimated + (daily rate * days remaining)
-  const activeRate = forecastMethod === 'recent_trend' ? recentDailyAverage : currentDailyAverage;
-  let projectedFinalUsage = estimatedCycleUnits + activeRate * daysRemaining;
-  projectedFinalUsage = parseFloat(projectedFinalUsage.toFixed(1));
-
-  // 8. Pace difference (current daily pace vs safe personal allowance)
-  const paceDifferencePerDay = parseFloat(
-    (currentDailyAverage - safeDailyAllowancePersonal).toFixed(2)
-  );
-
-  // 9. Projected threshold-crossing date (if projected >= 200)
-  let projectedThresholdCrossingDate: string | undefined;
-  if (activeRate > 0 && remainingUnitsOfficial > 0 && projectedFinalUsage >= officialCeiling) {
-    const daysUntilCrossing = remainingUnitsOfficial / activeRate;
-    const crossingTimestamp = now + daysUntilCrossing * 24 * 60 * 60 * 1000;
-    projectedThresholdCrossingDate = new Date(crossingTimestamp).toISOString();
-  } else if (estimatedCycleUnits >= officialCeiling) {
-    projectedThresholdCrossingDate = new Date().toISOString();
-  }
-
-  // Status is evaluated based on the HIGHER of current estimated usage or projected usage
-  // to warn users BEFORE they cross 200!
-  const status = calculateThresholdRisk(estimatedCycleUnits, officialCeiling, personalTarget);
-  const projectedRisk = calculateThresholdRisk(projectedFinalUsage, officialCeiling, personalTarget);
-
-  return {
-    cycleId: cycle.id,
-    totalTrackedUnits,
-    gapUnits,
-    currentEstimatedCycleUnits: estimatedCycleUnits,
-    officialCeiling,
-    personalTarget,
-    remainingUnitsOfficial,
-    remainingUnitsPersonal,
-    daysInCycle,
-    daysElapsed: parseFloat(daysElapsed.toFixed(1)),
-    daysRemaining,
-    currentDailyAverage,
-    recentDailyAverage,
-    safeDailyAllowanceOfficial,
-    safeDailyAllowancePersonal,
-    projectedFinalUsage,
-    forecastConfidence,
-    forecastMethod,
-    projectedThresholdCrossingDate,
-    paceDifferencePerDay,
-    status,
-    dataQuality: isValid && estimatedCycleUnits >= 0 ? 'valid' : 'invalid',
-    dataQualityMessage: error || (estimatedCycleUnits < 0 ? 'Invalid consumption cannot be calculated.' : undefined),
-    currentUsage: estimatedCycleUnits,
-    projectedUsage: projectedFinalUsage,
-    projectedRisk,
-  };
-}
-
-/**
- * Determines the next recommended reading time based on user history and preferences.
- */
-export function getRecommendedReadingTime(
-  readings: MeterReading[],
-  preferredTime = '18:00'
-): {
-  recommendationText: string;
-  isTodayRecorded: boolean;
-  targetDateTime: string;
-} {
-  const now = new Date();
-  const [prefHour, prefMin] = preferredTime.split(':').map((v) => parseInt(v, 10) || 0);
-
-  // Check if today already has a reading
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const todayEnd = todayStart + 24 * 60 * 60 * 1000;
-
-  const hasTodayReading = readings.some((r) => {
-    const t = new Date(r.reading_timestamp).getTime();
-    return t >= todayStart && t < todayEnd;
-  });
-
-  const targetDate = new Date(now);
-  let recommendationText = '';
-
-  if (hasTodayReading) {
-    // Already recorded today -> recommend tomorrow at preferred time
-    targetDate.setDate(targetDate.getDate() + 1);
-    targetDate.setHours(prefHour, prefMin, 0, 0);
-    recommendationText = `Tomorrow around ${formatHourAmPm(prefHour, prefMin)}`;
-  } else {
-    // Not recorded today yet
-    targetDate.setHours(prefHour, prefMin, 0, 0);
-    if (now.getTime() > targetDate.getTime()) {
-      recommendationText = 'Today as soon as convenient';
-    } else {
-      recommendationText = `Today around ${formatHourAmPm(prefHour, prefMin)}`;
+    const previousTime = Date.parse(previous.reading_timestamp);
+    const elapsedDays = (timestamp - previousTime) / MS_PER_DAY;
+    const boundary = authorizedBoundary(reading, events);
+    if (boundary) {
+      anomalies.push(makeAnomaly('LIFECYCLE_TRANSITION_BOUNDARY', undefined, [previous.id, reading.id], boundary.id));
+      intervals.push({ previousReadingId: previous.id, currentReadingId: reading.id, previousReading: previous.cumulativeKWh, currentReading: reading.cumulativeKWh, previousReadingAt: previous.reading_timestamp, currentReadingAt: reading.reading_timestamp, elapsedDays, status: 'BOUNDARY', lifecycleEventId: boundary.id });
+      continue;
     }
+    if (elapsedDays <= 0) {
+      anomalies.push(makeAnomaly(elapsedDays === 0 ? 'ZERO_DURATION_INTERVAL' : 'NEGATIVE_DURATION_INTERVAL', undefined, [previous.id, reading.id]));
+      invalidIntervalCount += 1;
+      sequenceBroken = true;
+      intervals.push({ previousReadingId: previous.id, currentReadingId: reading.id, previousReading: previous.cumulativeKWh, currentReading: reading.cumulativeKWh, previousReadingAt: previous.reading_timestamp, currentReadingAt: reading.reading_timestamp, elapsedDays, status: 'INVALID' });
+      continue;
+    }
+    const consumptionKwh = reading.cumulativeKWh - previous.cumulativeKWh;
+    if (consumptionKwh < 0) {
+      anomalies.push(makeAnomaly('DECREASING_CUMULATIVE_READING', undefined, [previous.id, reading.id]));
+      invalidIntervalCount += 1;
+      sequenceBroken = true;
+      intervals.push({ previousReadingId: previous.id, currentReadingId: reading.id, previousReading: previous.cumulativeKWh, currentReading: reading.cumulativeKWh, previousReadingAt: previous.reading_timestamp, currentReadingAt: reading.reading_timestamp, elapsedDays, status: 'INVALID' });
+      continue;
+    }
+    actualConsumptionKwh += consumptionKwh;
+    validIntervalCount += 1;
+    intervals.push({ previousReadingId: previous.id, currentReadingId: reading.id, previousReading: previous.cumulativeKWh, currentReading: reading.cumulativeKWh, previousReadingAt: previous.reading_timestamp, currentReadingAt: reading.reading_timestamp, elapsedDays, consumptionKwh, status: 'VALID' });
   }
-
-  return {
-    recommendationText,
-    isTodayRecorded: hasTodayReading,
-    targetDateTime: targetDate.toISOString(),
-  };
+  if (sorted.length === 1) anomalies.push(makeAnomaly('INSUFFICIENT_OBSERVATIONS', undefined, [sorted[0].id]));
+  if (sorted.some((reading) => reading.isBaseline && !authorizedBoundary(reading, events))) anomalies.push(makeAnomaly('UNAUTHORIZED_BASELINE'));
+  if (events.some((event) => event.type === 'rollover')) anomalies.push(makeAnomaly('UNSUPPORTED_ROLLOVER'));
+  const hasConflict = anomalies.some((item) => item.code === 'CONFLICTING_SAME_TIME_OBSERVATION');
+  const hasUnsupported = anomalies.some((item) => item.code === 'UNSUPPORTED_ROLLOVER');
+  const hasInvalid = invalidIntervalCount > 0 || anomalies.some((item) => ['DECREASING_CUMULATIVE_READING', 'INVALID_TIMESTAMP', 'INVALID_NUMERIC_VALUE', 'UNAUTHORIZED_BASELINE', 'UNSUPPORTED_ROLLOVER'].includes(item.code));
+  const dataQuality: CalculationDataQuality = hasConflict ? 'CONFLICTED' : hasUnsupported ? 'UNSUPPORTED' : hasInvalid && validIntervalCount > 0 ? 'PARTIAL' : hasInvalid ? 'INVALID' : validIntervalCount === 0 ? 'INSUFFICIENT_DATA' : 'VALID';
+  const elapsedDays = intervals.filter((item) => item.status === 'VALID' && item.elapsedDays !== undefined).reduce((total, item) => total + item.elapsedDays!, 0);
+  return { scope: options.scope, actualConsumptionKwh: round(actualConsumptionKwh), currentCumulativeKwh: sorted.at(-1)?.cumulativeKWh, observedRateKwhPerDay: elapsedDays > 0 && validIntervalCount > 0 ? actualConsumptionKwh / elapsedDays : undefined, dataQuality, validIntervalCount, invalidIntervalCount, intervals, anomalies };
 }
 
-function formatHourAmPm(hour: number, min: number): string {
-  const period = hour >= 12 ? 'PM' : 'AM';
-  const h12 = hour % 12 === 0 ? 12 : hour % 12;
-  const mStr = min > 0 ? `:${min.toString().padStart(2, '0')}` : ':00';
-  return `${h12}${mStr} ${period}`;
+export function calculateCycleResult(cycle: BillingCycle, readings: MeterReading[], options: CalculationOptions): CycleCalculationResult {
+  const start = Date.parse(`${cycle.billingPeriodStart}T00:00:00.000Z`);
+  const end = Date.parse(`${cycle.billingPeriodEnd}T00:00:00.000Z`) + MS_PER_DAY;
+  const asOf = Date.parse(options.asOf);
+  const result = calculateMeterConsumption(readings, options);
+  const anomalies = [...result.anomalies];
+  if (finite(cycle.syncOutdoorReading) && finite(cycle.currentOfficialReading) && cycle.syncOutdoorReading < cycle.currentOfficialReading) anomalies.push(makeAnomaly('INCONSISTENT_GAP'));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) anomalies.push(makeAnomaly('INVALID_CYCLE'));
+  if (!Number.isFinite(asOf)) anomalies.push(makeAnomaly('INVALID_TIMESTAMP'));
+  const totalCycleDays = Number.isFinite(start) && Number.isFinite(end) ? (end - start) / MS_PER_DAY : undefined;
+  const elapsedCycleDays = totalCycleDays === undefined ? undefined : Math.max(0, Math.min(totalCycleDays, (asOf - start) / MS_PER_DAY));
+  const remainingCycleDays = totalCycleDays === undefined || elapsedCycleDays === undefined ? undefined : Math.max(0, totalCycleDays - elapsedCycleDays);
+  const targetKwh = options.targetKwh;
+  const targetValid = targetKwh === undefined || (finite(targetKwh) && targetKwh >= 0);
+  if (!targetValid) anomalies.push(makeAnomaly('INVALID_TARGET'));
+  const targetProgressPercent = targetValid && targetKwh !== undefined && targetKwh > 0 ? (result.actualConsumptionKwh / targetKwh) * 100 : undefined;
+  const remainingTargetKwh = targetValid && targetKwh !== undefined ? Math.max(0, targetKwh - result.actualConsumptionKwh) : undefined;
+  const targetOverrunKwh = targetValid && targetKwh !== undefined ? Math.max(0, result.actualConsumptionKwh - targetKwh) : undefined;
+  const canProject = result.dataQuality === 'VALID' && result.observedRateKwhPerDay !== undefined && remainingCycleDays !== undefined;
+  const projectedEndCycleKwh = canProject ? result.actualConsumptionKwh + result.observedRateKwhPerDay! * remainingCycleDays : undefined;
+  const projectedOverrunKwh = projectedEndCycleKwh !== undefined && targetKwh !== undefined && targetValid ? Math.max(0, projectedEndCycleKwh - targetKwh) : undefined;
+  let riskStatus: CalculationRiskStatus = 'INSUFFICIENT_DATA';
+  if (result.dataQuality === 'UNSUPPORTED') riskStatus = 'UNSUPPORTED';
+  else if (result.dataQuality === 'INVALID' || result.dataQuality === 'CONFLICTED' || result.dataQuality === 'PARTIAL') riskStatus = 'INVALID_DATA';
+  else if (projectedOverrunKwh !== undefined && projectedOverrunKwh > 0) riskStatus = 'PROJECTED_OVER_TARGET';
+  else if (targetOverrunKwh !== undefined && targetOverrunKwh > 0) riskStatus = 'AT_RISK';
+  else if (result.dataQuality === 'VALID') riskStatus = 'ON_TRACK';
+  const quality = anomalies.some((item) => item.code === 'INVALID_CYCLE') ? 'INVALID' : anomalies.some((item) => item.code === 'UNSUPPORTED_ROLLOVER') ? 'UNSUPPORTED' : anomalies.some((item) => item.code === 'INCONSISTENT_GAP') && result.dataQuality === 'VALID' ? 'PARTIAL' : result.dataQuality;
+  return { ...result, cycleId: cycle.id, targetKwh, targetProgressPercent, remainingTargetKwh, targetOverrunKwh, projectedEndCycleKwh, projectedOverrunKwh, elapsedCyclePercent: totalCycleDays && elapsedCycleDays !== undefined ? (elapsedCycleDays / totalCycleDays) * 100 : undefined, remainingCyclePercent: totalCycleDays && remainingCycleDays !== undefined ? (remainingCycleDays / totalCycleDays) * 100 : undefined, totalCycleDays, elapsedCycleDays, remainingCycleDays, dataQuality: quality, anomalies, riskStatus };
 }
+
+/** Compatibility adapter for the original reading-list consumer. */
+export function calculateConsumption(readings: MeterReading[]): { processedReadings: MeterReading[]; totalTrackedUnits: number; isValid: boolean; error?: string } {
+  const first = readings[0];
+  const scope = first ? { householdId: first.householdId, meterId: first.meterId, cycleId: first.cycleId } : undefined;
+  const result = calculateMeterConsumption(readings, { asOf: first?.reading_timestamp ?? DEFAULT_REFERENCE_TIME, scope });
+  const validById = new Map(result.intervals.filter((interval) => interval.status === 'VALID').map((interval) => [interval.currentReadingId, interval]));
+  const processedReadings = [...readings].filter((reading) => !scope || (reading.householdId === scope.householdId && reading.meterId === scope.meterId && reading.cycleId === scope.cycleId)).sort((left, right) => Date.parse(left.reading_timestamp) - Date.parse(right.reading_timestamp) || left.id.localeCompare(right.id)).map((reading) => { const interval = validById.get(reading.id); return { ...reading, consumptionFromPrevious: interval?.consumptionKwh ?? (interval ? 0 : undefined), intervalHours: interval?.elapsedDays === undefined ? undefined : interval.elapsedDays * 24 }; });
+  const error = result.anomalies.find((item) => !['DUPLICATE_OBSERVATION', 'CROSS_ENTITY_CONTAMINATION'].includes(item.code));
+  return { processedReadings, totalTrackedUnits: result.actualConsumptionKwh, isValid: result.dataQuality === 'VALID' || result.dataQuality === 'INSUFFICIENT_DATA', ...(error ? { error: error.code } : {}) };
+}
+
+export function calculateGapUnits(outdoorSyncReading: number | undefined, currentOfficialReading: number | undefined): number { return !finite(outdoorSyncReading) || !finite(currentOfficialReading) || outdoorSyncReading < currentOfficialReading ? 0 : round(outdoorSyncReading - currentOfficialReading); }
+export function calculateRemainingUnits(currentUsage: number, target: number): number { return !finite(currentUsage) || !finite(target) ? 0 : round(target - currentUsage); }
+export function calculateDailyAllowance(remainingUnits: number, daysRemaining: number): number { return finite(remainingUnits) && finite(daysRemaining) && daysRemaining > 0 && remainingUnits > 0 ? round(remainingUnits / daysRemaining) : 0; }
+
+/** Legacy presentation adapter. Regulatory or tariff status is intentionally absent. */
+export function calculateThresholdRisk(usage: number, _officialCeiling = 200, personalTarget = 190): ThresholdStatus { return usage >= personalTarget ? { zone: 'very_close', label: 'TARGET REACHED', colorClass: 'text-amber-700', bgClass: 'bg-amber-50', borderClass: 'border-amber-200', description: `Personal management target of ${personalTarget} kWh has been reached.` } : { zone: 'on_track', label: 'ON TRACK', colorClass: 'text-emerald-700', bgClass: 'bg-emerald-50', borderClass: 'border-emerald-200', description: `Usage is below the personal management target of ${personalTarget} kWh.` }; }
+
+export function calculateCycleSummary(cycle: BillingCycle | null, readings: MeterReading[], trackingMode: TrackingMode = 'indoor_cumulative', officialCeiling = 200, personalTarget = 190, asOf?: string, scope?: CalculationScope, lifecycleEvents: MeterLifecycleEvent[] = []): CalculationSummary {
+  const cycleReadings = cycle ? readings.filter((reading) => reading.cycleId === cycle.id) : [];
+  const referenceTime = asOf ?? cycleReadings.at(-1)?.reading_timestamp ?? cycle?.officialReadingDate ?? DEFAULT_REFERENCE_TIME;
+  const meterResult = cycle ? calculateMeterConsumption(cycleReadings, { asOf: referenceTime, scope, lifecycleEvents }) : undefined;
+  const gapUnits = calculateGapUnits(cycle?.syncOutdoorReading, cycle?.currentOfficialReading);
+  const estimatedCycleUnits = gapUnits + (meterResult?.actualConsumptionKwh ?? 0);
+  const result = cycle ? calculateCycleResult(cycle, cycleReadings, { asOf: referenceTime, targetKwh: personalTarget, scope, lifecycleEvents }) : undefined;
+  const daysInCycle = result?.totalCycleDays ?? 30; const daysElapsed = result?.elapsedCycleDays ?? 0; const daysRemaining = result?.remainingCycleDays ?? daysInCycle; const currentDailyAverage = result?.observedRateKwhPerDay ?? 0; const projectedFinalUsage = result?.projectedEndCycleKwh ?? estimatedCycleUnits; const quality = result?.dataQuality ?? 'INSUFFICIENT_DATA';
+  return { cycleId: cycle?.id ?? '', totalTrackedUnits: meterResult?.actualConsumptionKwh ?? 0, gapUnits, currentEstimatedCycleUnits: round(estimatedCycleUnits), officialCeiling, personalTarget, remainingUnitsOfficial: calculateRemainingUnits(estimatedCycleUnits, officialCeiling), remainingUnitsPersonal: calculateRemainingUnits(estimatedCycleUnits, personalTarget), daysInCycle: Math.max(1, round(daysInCycle)), daysElapsed: round(daysElapsed, 1), daysRemaining: Math.max(0, round(daysRemaining)), currentDailyAverage: round(currentDailyAverage), recentDailyAverage: round(currentDailyAverage), safeDailyAllowanceOfficial: calculateDailyAllowance(officialCeiling - estimatedCycleUnits, daysRemaining), safeDailyAllowancePersonal: calculateDailyAllowance(personalTarget - estimatedCycleUnits, daysRemaining), projectedFinalUsage: round(projectedFinalUsage, 1), forecastConfidence: result?.observedRateKwhPerDay !== undefined ? 'medium' : 'limited_data', forecastMethod: 'cycle_average', paceDifferencePerDay: round(currentDailyAverage - calculateDailyAllowance(personalTarget - estimatedCycleUnits, daysRemaining)), status: calculateThresholdRisk(estimatedCycleUnits, officialCeiling, personalTarget), dataQuality: quality === 'VALID' || quality === 'INSUFFICIENT_DATA' ? 'valid' : 'invalid', dataQualityMessage: result?.anomalies[0]?.code, currentUsage: round(estimatedCycleUnits), projectedUsage: round(projectedFinalUsage, 1), projectedRisk: calculateThresholdRisk(projectedFinalUsage, officialCeiling, personalTarget) };
+}
+
+export function getRecommendedReadingTime(readings: MeterReading[], preferredTime = '18:00', asOf = DEFAULT_REFERENCE_TIME): { recommendationText: string; isTodayRecorded: boolean; targetDateTime: string } {
+  const now = new Date(asOf); const [prefHour, prefMin] = preferredTime.split(':').map((value) => parseInt(value, 10) || 0); const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).getTime(); const todayEnd = todayStart + MS_PER_DAY; const isTodayRecorded = readings.some((reading) => { const time = Date.parse(reading.reading_timestamp); return time >= todayStart && time < todayEnd; }); const target = new Date(now); if (isTodayRecorded) target.setUTCDate(target.getUTCDate() + 1); target.setUTCHours(prefHour, prefMin, 0, 0); return { recommendationText: isTodayRecorded ? `Tomorrow around ${formatHourAmPm(prefHour, prefMin)}` : now.getTime() > target.getTime() ? 'Today as soon as convenient' : `Today around ${formatHourAmPm(prefHour, prefMin)}`, isTodayRecorded, targetDateTime: target.toISOString() };
+}
+function formatHourAmPm(hour: number, min: number): string { const period = hour >= 12 ? 'PM' : 'AM'; const h12 = hour % 12 === 0 ? 12 : hour % 12; return `${h12}:${min.toString().padStart(2, '0')} ${period}`; }

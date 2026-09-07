@@ -7,6 +7,7 @@ import {
   Meter,
   MeterReading,
   AuditRecord,
+  MeterLifecycleEvent,
 } from '../types';
 import { energyApplication } from '../application/container';
 import { calculateCycleSummary } from '../engine/calculations';
@@ -18,6 +19,7 @@ interface EnergyContextType {
   cycles: BillingCycle[];
   activeCycle: BillingCycle | null;
   readings: MeterReading[];
+  lifecycleEvents: MeterLifecycleEvent[];
   auditLogs: AuditRecord[];
   summary: CalculationSummary;
   isLoading: boolean;
@@ -48,6 +50,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [meters, setMeters] = useState<Meter[]>([]);
   const [cycles, setCycles] = useState<BillingCycle[]>([]);
   const [readings, setReadings] = useState<MeterReading[]>([]);
+  const [lifecycleEvents, setLifecycleEvents] = useState<MeterLifecycleEvent[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +66,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setMeters(snapshot.meters);
       setCycles(snapshot.cycles);
       setReadings(snapshot.readings);
+      setLifecycleEvents(snapshot.lifecycleEvents);
       setAuditLogs(snapshot.auditLogs);
     } catch (err) {
       setError((err as Error).message || 'Failed to load electricity records');
@@ -85,9 +89,12 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       readings,
       settings?.trackingMode || 'indoor_cumulative',
       settings?.officialThreshold || 200,
-      settings?.personalTarget || 190
+      settings?.personalTarget || 190,
+      new Date().toISOString(),
+      activeCycle && household && meters[0] ? { householdId: household.id, meterId: meters[0].id, cycleId: activeCycle.id } : undefined,
+      lifecycleEvents
     );
-  }, [activeCycle, readings, settings]);
+  }, [activeCycle, readings, settings, household, meters, lifecycleEvents]);
 
   const addReading = async (reading: Omit<MeterReading, 'id' | 'entry_timestamp'>) => {
     const created = await energyApplication.createReading(reading);
@@ -170,6 +177,7 @@ export const EnergyProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cycles,
         activeCycle,
         readings,
+        lifecycleEvents,
         auditLogs,
         summary,
         isLoading,

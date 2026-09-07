@@ -121,6 +121,8 @@ export class LocalStorageEnergyRepository implements EnergyRepository {
     return readings.filter((reading) => !cycleId || reading.cycleId === cycleId).sort((a, b) => Date.parse(a.reading_timestamp) - Date.parse(b.reading_timestamp));
   }
 
+  async getLifecycleEvents(): Promise<MeterLifecycleEvent[]> { return (await this.state()).lifecycleEvents; }
+
   async addMeterReading(readingData: Omit<MeterReading, 'id' | 'entry_timestamp'>): Promise<MeterReading> {
     const state = await this.state();
     const reading: MeterReading = { ...readingData, id: id('reading'), entry_timestamp: new Date().toISOString() };

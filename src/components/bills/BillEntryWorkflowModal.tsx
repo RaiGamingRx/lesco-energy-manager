@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, Check, AlertTriangle, ArrowRight, ShieldCheck, Gauge, RotateCcw, FileText } from 'lucide-react';
 import { useEnergy } from '../../context/EnergyContext';
 import { validateBillingCycle, validateOutdoorSync } from '../../engine/validation';
+import { calculateGapUnits } from '../../engine/calculations';
 import { BillingCycle, BillCharges } from '../../types';
 import { getDefaultBillCharges } from '../../engine/tariffs';
 import { DataBadge } from '../common/DataBadge';
@@ -139,7 +140,7 @@ export const BillEntryWorkflowModal: React.FC<BillEntryWorkflowModalProps> = ({
     const units = parseFloat(billedUnits);
     const amount = parseFloat(billAmount);
     const sync = parseFloat(outdoorSyncReading);
-    const gap = Math.max(0, sync - curr);
+    const gap = calculateGapUnits(sync, curr);
 
     const newCycleId = `cycle-${readingDate.slice(0, 7)}-${Math.random().toString(36).substr(2, 4)}`;
 
